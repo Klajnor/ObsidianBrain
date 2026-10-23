@@ -1,0 +1,4 @@
+openai>=1.40
+mcp>=1.2
+watchdog>=4
+PyStemmer>=2.2
