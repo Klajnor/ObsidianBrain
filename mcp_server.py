@@ -3,7 +3,7 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from common import VAULT, connect, fts_query
+from common import VAULTS, connect, fts_query
 
 mcp = FastMCP("brain")
 
@@ -51,9 +51,13 @@ def get_chunk(chunk_id: int) -> dict:
 
 @mcp.tool()
 def get_note(path: str) -> str:
-    """Полный текст заметки по относительному пути из search_notes."""
-    p = (VAULT / path).resolve()
-    if VAULT not in p.parents or p.suffix != ".md" or ".obsidian" in p.parts:
+    """Полный текст заметки по пути из search_notes (путь начинается с имени хранилища)."""
+    path = path.replace("\\", "/")
+    vault = next((v for v in VAULTS if path.startswith(v.name + "/")), None)
+    if vault is None:
+        return "ошибка: путь должен начинаться с имени хранилища: " + "; ".join(v.name for v in VAULTS)
+    p = (vault / path[len(vault.name) + 1:]).resolve()
+    if vault not in p.parents or p.suffix != ".md" or ".obsidian" in p.parts:
         return "ошибка: недопустимый путь"
     return p.read_text(encoding="utf-8", errors="replace") if p.exists() else "ошибка: файл не найден"
 

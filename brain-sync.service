@@ -1,0 +1,37 @@
+# Пример systemd-юнита: постоянная индексация хранилищ (python sync.py --watch).
+# Здесь и ниже путь к репозиторию — /opt/brain, пользователь — brain; замени на свои.
+#
+# Установка:
+#   sudo cp brain-sync.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now brain-sync
+# Логи: journalctl -u brain-sync -f
+#
+# Внимание:
+# - MCP-сервер (mcp_server.py) под systemd не запускают: он работает по stdio,
+#   его стартует MCP-клиент по .mcp.json.
+# - Альтернатива без демона: пара brain-pull.timer / brain-pull.service — раз в 5 минут
+#   git pull хранилища и разовый sync.py (подходит и для хранилищ, доступных по NFS/SMB).
+
+[Unit]
+Description=Brain: инкрементальная дистилляция Obsidian-хранилищ в SQLite (watch)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Пользователю нужен доступ на чтение к хранилищам (VAULT_PATH) и на запись в data/;
+# .env с LLM_API_KEY — chmod 600, владелец этот пользователь.
+User=brain
+Group=brain
+# WorkingDirectory и EnvironmentFile не нужны: .env и относительные VAULT_PATH
+# код читает сам, от каталога со скриптом (common.load_env, BRAIN_DIR).
+# Если зависимости поставлены в venv — укажи его питон: /opt/brain/.venv/bin/python
+ExecStart=/usr/bin/python3 /opt/brain/sync.py --watch
+# SIGINT, а не SIGTERM: watch завершается чисто по KeyboardInterrupt (obs.stop())
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

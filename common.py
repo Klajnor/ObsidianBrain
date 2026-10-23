@@ -25,11 +25,32 @@ def load_env(path: Path = BRAIN_DIR / ".env"):
 
 
 load_env()
-if not os.environ.get("VAULT_PATH"):
-    raise SystemExit("Не задан VAULT_PATH (путь к хранилищу Obsidian) – см. .env.example")
-VAULT = Path(os.environ["VAULT_PATH"]).resolve()
-if not VAULT.is_dir():
-    raise SystemExit(f"VAULT_PATH не существует: {VAULT}")
+
+
+def _vaults() -> list[Path]:
+    """VAULT_PATH: несколько хранилищ через «;»; относительные пути – от каталога с кодом."""
+    out: list[Path] = []
+    for part in os.environ.get("VAULT_PATH", "").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        p = Path(part)
+        if not p.is_absolute():
+            p = BRAIN_DIR / p
+        p = p.resolve()
+        if not p.is_dir():
+            raise SystemExit(f"VAULT_PATH не существует: {p}")
+        if p in out:  # один и тот же каталог дважды
+            continue
+        if any(v.name == p.name for v in out):
+            raise SystemExit(f"Два разных хранилища с именем «{p.name}» – пути заметок в БД столкнутся")
+        out.append(p)
+    if not out:
+        raise SystemExit("Не задан VAULT_PATH (пути к хранилищам Obsidian, можно несколько через «;») – см. .env.example")
+    return out
+
+
+VAULTS = _vaults()
 
 EXCLUDE_DIRS = {".obsidian", ".git", ".trash", "_resources", "Блок схемы для документации"}
 EXCLUDE_FILES = {"CLAUDE.md"}
@@ -72,8 +93,10 @@ def connect() -> sqlite3.Connection:
 
 
 def iter_notes():
-    for p in sorted(VAULT.rglob("*.md")):
-        rel = p.relative_to(VAULT)
-        if rel.parts[0] in EXCLUDE_DIRS or p.name in EXCLUDE_FILES:
-            continue
-        yield p, rel.as_posix()
+    """Путь заметки в БД: <имя каталога хранилища>/<путь внутри хранилища>."""
+    for root in VAULTS:
+        for p in sorted(root.rglob("*.md")):
+            rel = p.relative_to(root)
+            if rel.parts[0] in EXCLUDE_DIRS or p.name in EXCLUDE_FILES:
+                continue
+            yield p, f"{root.name}/{rel.as_posix()}"

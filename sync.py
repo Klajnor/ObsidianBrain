@@ -1,8 +1,8 @@
-"""Инкрементальная дистилляция хранилища в .brain/brain.db.
+"""Инкрементальная дистилляция хранилищ в data/brain.db.
 
-  python brain/sync.py            – обработать новые/изменённые, удалить исчезнувшие
-  python brain/sync.py --dry-run  – только показать, что будет сделано
-  python brain/sync.py --watch    – держать процесс и синхронизировать после правок
+  python sync.py            – обработать новые/изменённые, удалить исчезнувшие
+  python sync.py --dry-run  – только показать, что будет сделано
+  python sync.py --watch    – держать процесс и синхронизировать после правок
 """
 import argparse
 import hashlib
@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common import VAULT, connect, iter_notes, stem_text
+from common import VAULTS, connect, iter_notes, stem_text
 
 MAX_CHUNK = 6000           # символов в одном куске
 MAX_DISTILL_INPUT = int(os.environ.get("LLM_MAX_INPUT_CHARS", "60000"))  # больше – делаем map-reduce по секциям
@@ -199,7 +199,8 @@ def watch(debounce: float = 30.0) -> int:
                 dirty["t"] = time.time()
 
     obs = Observer()
-    obs.schedule(Handler(), str(VAULT), recursive=True)
+    for v in VAULTS:
+        obs.schedule(Handler(), str(v), recursive=True)
     obs.start()
     sync()
     print("слежу за хранилищем (Ctrl+C для выхода)")
