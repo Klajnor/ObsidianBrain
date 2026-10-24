@@ -1,11 +1,11 @@
 """MCP-сервер «второго мозга»: поиск по карточкам и выдача текста заметок."""
 import json
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from common import EXCLUDE_DIRS, EXCLUDE_FILES, VAULTS, connect, fts_query
 
-mcp = FastMCP("brain")
+mcp = MCPServer("brain")
 
 
 def _card(r) -> dict:
