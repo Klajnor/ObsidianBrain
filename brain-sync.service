@@ -32,6 +32,13 @@ ExecStart=/usr/bin/python3 /opt/brain/sync.py --watch
 KillSignal=SIGINT
 Restart=on-failure
 RestartSec=30
+# Hardening: запись нужна только в data/, остальное – чтение.
+# Если хранилище или репозиторий лежат в /home – убери ProtectHome.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/brain/data
+ProtectHome=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS chunks_path ON chunks(path);
 
--- Тексты в fts кладутся уже нормализованными (brain/common.py:stem_text).
+-- Тексты в fts кладутся уже нормализованными (common.py:stem_text).
 -- kind='note' – карточка (rowid = notes.rowid), kind='chunk' – кусок (rowid = chunks.id).
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_notes USING fts5(
     title, summary, keywords, questions, tokenize='unicode61 remove_diacritics 2'

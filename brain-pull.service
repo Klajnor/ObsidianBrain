@@ -35,3 +35,10 @@ ExecStart=/usr/bin/git -C /srv/obsidian-personal pull --ff-only
 ExecStart=/opt/brain/.venv/bin/python /opt/brain/sync.py
 # Первый полный прогон (пустая data/brain.db) может занять десятки минут — без лимита времени
 TimeoutStartSec=0
+# Hardening: запись – только в клоны хранилищ и data/; домашний каталог – только чтение
+# (оттуда git/ssh берут креды и ключи). Если пути лежат в /home – подстрой ProtectHome.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/brain/data /srv/obsidian-vault /srv/obsidian-personal
+ProtectHome=read-only
+PrivateTmp=true

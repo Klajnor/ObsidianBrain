@@ -85,9 +85,10 @@ def fts_query(query: str) -> str:
 
 def connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DB_PATH)
+    db = sqlite3.connect(DB_PATH, timeout=30)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
+    db.execute("PRAGMA journal_mode = WAL")  # чтения (MCP) не блокируются записями sync
     db.executescript(SCHEMA.read_text(encoding="utf-8"))
     return db
 
@@ -97,6 +98,7 @@ def iter_notes():
     for root in VAULTS:
         for p in sorted(root.rglob("*.md")):
             rel = p.relative_to(root)
-            if rel.parts[0] in EXCLUDE_DIRS or p.name in EXCLUDE_FILES:
+            # служебные каталоги исключаем на любой глубине (вложенный .git и т.п.)
+            if any(part in EXCLUDE_DIRS for part in rel.parts) or p.name in EXCLUDE_FILES:
                 continue
             yield p, f"{root.name}/{rel.as_posix()}"

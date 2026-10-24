@@ -3,7 +3,7 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from common import VAULTS, connect, fts_query
+from common import EXCLUDE_DIRS, EXCLUDE_FILES, VAULTS, connect, fts_query
 
 mcp = FastMCP("brain")
 
@@ -57,7 +57,8 @@ def get_note(path: str) -> str:
     if vault is None:
         return "ошибка: путь должен начинаться с имени хранилища: " + "; ".join(v.name for v in VAULTS)
     p = (vault / path[len(vault.name) + 1:]).resolve()
-    if vault not in p.parents or p.suffix != ".md" or ".obsidian" in p.parts:
+    if (vault not in p.parents or p.suffix != ".md"
+            or any(part in EXCLUDE_DIRS for part in p.parts) or p.name in EXCLUDE_FILES):
         return "ошибка: недопустимый путь"
     return p.read_text(encoding="utf-8", errors="replace") if p.exists() else "ошибка: файл не найден"
 
@@ -65,6 +66,7 @@ def get_note(path: str) -> str:
 @mcp.tool()
 def list_notes(doc_type: str = "", limit: int = 50) -> list[dict]:
     """Список заметок (опционально по типу: howto, reference, daily, clippings, troubleshooting)."""
+    limit = max(1, min(limit, 500))
     sql, args = "SELECT * FROM notes", []
     if doc_type:
         sql, args = sql + " WHERE doc_type=?", [doc_type]

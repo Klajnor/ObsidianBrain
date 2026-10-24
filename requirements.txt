@@ -1,4 +1,6 @@
 openai>=1.40
-mcp>=1.2
+# mcp 2.x renamed FastMCP (mcp.server.fastmcp -> mcp.server.mcpserver) and
+# breaks this server's `from mcp.server.fastmcp import FastMCP` import.
+mcp>=1.2,<2
 watchdog>=4
 PyStemmer>=2.2

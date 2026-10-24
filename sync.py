@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common import VAULTS, connect, iter_notes, stem_text
+from common import EXCLUDE_DIRS, VAULTS, connect, iter_notes, stem_text
 
 MAX_CHUNK = 6000           # символов в одном куске
 MAX_DISTILL_INPUT = int(os.environ.get("LLM_MAX_INPUT_CHARS", "60000"))  # больше – делаем map-reduce по секциям
@@ -33,6 +33,8 @@ def client():
     if _client is None:
         from openai import OpenAI
 
+        if not os.environ.get("LLM_MODEL"):
+            raise SystemExit("Не задан LLM_MODEL (имя модели) – см. .env.example")
         _client = OpenAI(
             base_url=os.environ.get("LLM_BASE_URL") or None,
             api_key=os.environ.get("LLM_API_KEY") or "none",  # локальным серверам ключ не нужен
@@ -41,10 +43,10 @@ def client():
     return _client
 
 
-def parse_card(raw: str) -> dict:
-    """Достаём JSON, даже если модель обернула его в ```json или добавила текст."""
-    m = re.search(r"\{.*\}", raw, flags=re.S)
-    card = json.loads(m.group(0) if m else raw)
+CARD_KEYS = {"summary", "keywords", "entities", "questions", "doc_type"}
+
+
+def _norm_card(card: dict) -> dict:
     for key in ("keywords", "entities", "questions"):
         card[key] = [str(x) for x in card.get(key) or []]
     card["summary"] = str(card.get("summary", ""))
@@ -52,12 +54,33 @@ def parse_card(raw: str) -> dict:
     return card
 
 
+def parse_card(raw: str) -> dict:
+    """Достаём JSON-карточку, даже если модель обернула её в ```json или добавила текст."""
+    dec = json.JSONDecoder()
+    fallback = None
+    for i, ch in enumerate(raw):
+        if ch != "{":
+            continue
+        try:
+            obj = dec.raw_decode(raw, i)[0]
+        except json.JSONDecodeError:
+            continue  # `{` в тексте вокруг JSON – пробуем следующую
+        if not isinstance(obj, dict):
+            continue
+        if CARD_KEYS & obj.keys():  # похоже на карточку, а не на случайный объект в тексте
+            return _norm_card(obj)
+        fallback = fallback or obj
+    if fallback is None:
+        raise ValueError(f"в ответе модели нет JSON-объекта: {raw[:200]!r}")
+    return _norm_card(fallback)
+
+
 def sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def strip_frontmatter(text: str) -> str:
-    return re.sub(r"\A---\n.*?\n---\n", "", text, count=1, flags=re.S)
+    return re.sub(r"\A---\n.*?\n---(?:\n|\Z)", "", text, count=1, flags=re.S)
 
 
 def chunk_note(text: str) -> list[tuple[str, str]]:
@@ -71,18 +94,27 @@ def chunk_note(text: str) -> list[tuple[str, str]]:
             buf.append(line)
     parts.append((heading, "\n".join(buf)))
 
+    def pieces(body: str):
+        # абзац без переносов длиннее лимита (сплошная простыня, base64) режем принудительно
+        for para in body.split("\n\n"):
+            while len(para) > MAX_CHUNK:
+                yield para[:MAX_CHUNK]
+                para = para[MAX_CHUNK:]
+            yield para
+
     chunks = []
     for heading, body in parts:
         body = body.strip()
         if not body:
             continue
         cur = ""
-        for para in body.split("\n\n"):
-            if cur and len(cur) + len(para) > MAX_CHUNK:
+        for piece in pieces(body):
+            if cur and len(cur) + len(piece) > MAX_CHUNK:
                 chunks.append((heading, cur))
                 cur = ""
-            cur = f"{cur}\n\n{para}" if cur else para
-        chunks.append((heading, cur))
+            cur = f"{cur}\n\n{piece}" if cur else piece
+        if cur:
+            chunks.append((heading, cur))
     return chunks
 
 
@@ -156,10 +188,16 @@ def sync(dry_run: bool = False) -> int:
     known = {r["path"]: r["content_hash"] for r in db.execute("SELECT path, content_hash FROM notes")}
     seen, todo = set(), []
     for abs_path, rel in iter_notes():
-        seen.add(rel)
-        text = abs_path.read_text(encoding="utf-8", errors="replace")
-        if not text.strip():
+        try:
+            text = abs_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:  # недоступный файл не должен ронять прогон
+            if rel in known:
+                seen.add(rel)  # временно не читается – прежнюю запись из БД не удаляем
+            print(f"ПРОПУСК {rel}: {e}", file=sys.stderr)
             continue
+        if not text.strip():
+            continue  # пустая заметка не индексируется; прежняя запись уйдёт в «исчезнувшие»
+        seen.add(rel)
         h = sha(text)
         if known.get(rel) != h:
             todo.append((rel, abs_path, text, h))
@@ -195,7 +233,8 @@ def watch(debounce: float = 30.0) -> int:
 
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
-            if event.src_path.endswith(".md") and ".obsidian" not in event.src_path and ".git" not in event.src_path:
+            src = (event.src_path or "").replace("\\", "/")
+            if src.endswith(".md") and not any(f"/{d}/" in src for d in EXCLUDE_DIRS):
                 dirty["t"] = time.time()
 
     obs = Observer()
