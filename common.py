@@ -49,6 +49,8 @@ def _vaults() -> list[Path]:
         p = p.resolve()
         if not p.is_dir():
             raise SystemExit(f"VAULT_PATH не существует: {p}")
+        if p.parent == p:  # «/» или «C:\»: иначе индексируется вся ФС
+            raise SystemExit(f"VAULT_PATH не может быть корнем файловой системы: {p}")
         if p in out:  # один и тот же каталог дважды
             continue
         if any(v.name == p.name for v in out):
