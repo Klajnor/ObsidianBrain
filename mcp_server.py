@@ -17,6 +17,10 @@ os.environ.pop("LLM_API_KEY", None)
 
 mcp = MCPServer("brain")
 
+MAX_QUERY_CHARS = 500       # защита FTS от гигантских запросов
+MAX_K = 50                  # потолок выдачи search_notes
+MAX_NOTE_BYTES = 1_000_000  # больше — отдаём через get_chunk, не забиваем контекст
+
 
 def _card(r) -> dict:
     return {"path": r["path"], "title": r["title"], "type": r["doc_type"], "summary": r["summary"],
@@ -27,6 +31,8 @@ def _card(r) -> dict:
 def search_notes(query: str, k: int = 8) -> list[dict]:
     """Поиск заметок по ключевым словам/вопросу. Возвращает карточки (путь, описание, ключевые слова)
     и до 2 лучших фрагментов. Полный текст – через get_note, фрагмент – через get_chunk."""
+    query = query[:MAX_QUERY_CHARS]
+    k = max(1, min(int(k), MAX_K))
     q = fts_query(query)
     if not q:
         return []
@@ -70,7 +76,14 @@ def get_note(path: str) -> str:
     if (vault not in p.parents or p.suffix != ".md"
             or any(part in EXCLUDE_DIRS for part in p.parts) or p.name in EXCLUDE_FILES):
         return "ошибка: недопустимый путь"
-    return p.read_text(encoding="utf-8", errors="replace") if p.exists() else "ошибка: файл не найден"
+    try:
+        if not p.is_file():  # в т.ч. FIFO/каталог: не блокируем чтение
+            return "ошибка: не файл"
+        if p.stat().st_size > MAX_NOTE_BYTES:
+            return f"ошибка: заметка больше {MAX_NOTE_BYTES} байт — используйте get_chunk"
+        return p.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return f"ошибка: не удалось прочитать файл: {e}"
 
 
 @mcp.tool()

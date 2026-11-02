@@ -18,6 +18,8 @@ from common import EXCLUDE_DIRS, VAULTS, connect, iter_notes, stem_text
 
 MAX_CHUNK = 6000           # символов в одном куске
 MAX_DISTILL_INPUT = int(os.environ.get("LLM_MAX_INPUT_CHARS", "60000"))  # больше – делаем map-reduce по секциям
+MAX_CHUNKS = max(1, int(os.environ.get("LLM_MAX_CHUNKS", "60")))  # потолок LLM-вызовов на одну заметку
+MAX_NOTE_BYTES = max(1024, int(os.environ.get("LLM_MAX_NOTE_BYTES", str(5 * 1024 * 1024))))
 PROMPT = Path(__file__).with_name("prompt.md").read_text(encoding="utf-8")
 
 JSON_HINT = (
@@ -138,6 +140,10 @@ def call_card(title: str, text: str, hint: str = "") -> dict:
 def distill(title: str, text: str, chunks: list[tuple[str, str]]) -> dict:
     if len(text) <= MAX_DISTILL_INPUT:
         return call_card(title, text)
+    if len(chunks) > MAX_CHUNKS:  # защита от случайного/злонамеренного файла-гиганта
+        print(f"ПРЕДУПРЕЖДЕНИЕ: заметка {title!r}: {len(chunks)} фрагментов, обрабатываю первые {MAX_CHUNKS}",
+              file=sys.stderr)
+        chunks = chunks[:MAX_CHUNKS]
     # map: краткие карточки секций, reduce: общая карточка по ним
     partial = []
     for heading, body in chunks:
@@ -189,6 +195,11 @@ def sync(dry_run: bool = False) -> int:
     seen, todo = set(), []
     for abs_path, rel in iter_notes():
         try:
+            if abs_path.stat().st_size > MAX_NOTE_BYTES:
+                print(f"ПРОПУСК {rel!r}: файл больше {MAX_NOTE_BYTES} байт", file=sys.stderr)
+                if rel in known:
+                    seen.add(rel)  # прежнюю запись не удаляем, пока файл не уменьшится
+                continue
             text = abs_path.read_text(encoding="utf-8", errors="replace")
         except OSError as e:  # недоступный файл не должен ронять прогон
             if rel in known:

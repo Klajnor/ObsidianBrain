@@ -149,7 +149,7 @@ def iter_notes():
                 if not name.endswith(".md") or name in EXCLUDE_FILES:
                     continue
                 p = here / name
-                if _is_link(p):
+                if _is_link(p) or not p.is_file():  # FIFO/сокет не читаем: можно зависнуть
                     continue
                 real = p.resolve()
                 if root not in real.parents or real in seen:
