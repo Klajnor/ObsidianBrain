@@ -4,6 +4,7 @@ import json
 from mcp.server.mcpserver import MCPServer
 
 from common import EXCLUDE_DIRS, EXCLUDE_FILES, VAULTS, connect, fts_query
+from capture import create_note as capture_note
 
 mcp = MCPServer("brain")
 
@@ -71,6 +72,16 @@ def list_notes(doc_type: str = "", limit: int = 50) -> list[dict]:
     if doc_type:
         sql, args = sql + " WHERE doc_type=?", [doc_type]
     return [_card(r) for r in connect().execute(sql + " ORDER BY updated_at DESC LIMIT ?", args + [limit])]
+
+
+@mcp.tool()
+def create_note(content: str, request_id: str) -> dict:
+    """Создать новую Telegram-заметку (нужен BRAIN_WRITE_ENABLED=true).
+
+    Не изменяет существующие файлы. Повтор с тем же request_id не создаёт дубликат.
+    Авторизацию владельца обязан проверить вызывающий клиент.
+    """
+    return capture_note(content, request_id)
 
 
 if __name__ == "__main__":
