@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from git_publish import publish_note
+from git_publish import _failure_reason, publish_note
 
 
 class GitPublishTests(unittest.TestCase):
@@ -40,6 +40,22 @@ class GitPublishTests(unittest.TestCase):
     def git(self, directory, *args):
         return subprocess.run(["git", "-C", str(directory), *args], check=True,
                               capture_output=True, encoding="utf-8", timeout=30).stdout.strip()
+
+    def test_failure_reasons_do_not_expose_stderr_secrets(self):
+        cases = [
+            ("Author identity unknown", "user.name/user.email"),
+            ("Could not resolve host: github.com", "DNS"),
+            ("Permission denied (publickey)", "аутентификация"),
+            ("detected dubious ownership", "dubious ownership"),
+            ("unable to create file: Permission denied", "permission denied"),
+            ("arbitrary unexpected failure", "причина скрыта"),
+        ]
+        for stderr, expected in cases:
+            with self.subTest(expected=expected):
+                reason = _failure_reason(stderr + " https://user:secret-token@example.invalid /secret/vault")
+                self.assertIn(expected, reason)
+                self.assertNotIn("secret-token", reason)
+                self.assertNotIn("/secret/vault", reason)
 
     def test_pushes_only_note_preserves_staged_and_unstaged_changes(self):
         (self.vault / "private.txt").write_text("do not publish", encoding="utf-8")

@@ -10,6 +10,28 @@ from pathlib import Path
 _SUBJECT = "Telegram: сохранена заметка"
 
 
+def _failure_reason(stderr: str) -> str:
+    """Классифицировать stderr, не раскрывая URL, ключи и имена файлов."""
+    text = stderr.casefold()
+    if "dubious ownership" in text:
+        return "небезопасный владелец Git (dubious ownership)"
+    if any(part in text for part in ("author identity unknown", "unable to auto-detect email", "empty ident name")):
+        return "не настроены user.name/user.email"
+    if "could not resolve host" in text or "could not resolve hostname" in text:
+        return "сбой DNS Git"
+    if any(part in text for part in ("authentication failed", "permission denied (publickey)", "could not read username")):
+        return "аутентификация Git не удалась"
+    if "read-only file system" in text:
+        return "read-only file system"
+    if "permission denied" in text:
+        return "permission denied"
+    if "not a git repository" in text:
+        return "not a git repository"
+    if "non-fast-forward" in text or "fetch first" in text:
+        return "remote изменился; автоматический rebase/force запрещён"
+    return "причина скрыта: stderr может содержать секреты"
+
+
 def publish_note(vault: Path, target: Path) -> None:
     """Коммит и обычный push в upstream; при сбое локальная заметка остаётся."""
     environment = os.environ.copy()
@@ -29,7 +51,7 @@ def publish_note(vault: Path, target: Path) -> None:
             raise RuntimeError("Git недоступен или превышен таймаут; заметка сохранена локально") from exc
         if result.returncode:
             # stderr может содержать URL с токеном, имена и содержимое файлов.
-            raise RuntimeError(f"Ошибка Git ({args[0]}); заметка сохранена локально")
+            raise RuntimeError(f"Ошибка Git ({args[0]}): {_failure_reason(result.stderr)}; заметка сохранена локально")
         return result.stdout.strip()
 
     root = Path(git("rev-parse", "--show-toplevel")).resolve()
