@@ -21,3 +21,4 @@
 - `VAULT_PATH` больше не принимает корень файловой системы (`/`, `C:\`): иначе индексировалась бы вся ФС, а `get_note` мог бы отдать любой `.md` на диске.
 - `.gitignore` не даёт случайно закоммитить `.env.*`, `*.db`/`*.db-wal`/`*.db-shm`, `.venv`; в `requirements.txt` добавлены верхние границы мажорных версий зависимостей.
 - systemd-юниты дополнительно ограничены (`PrivateDevices`, `ProtectKernel*`, `RestrictNamespaces`/`Realtime`/`SUIDSGID`, `LockPersonality`, пустой `CapabilityBoundingSet`, `RestrictAddressFamilies`). `brain-pull.service` не зависает на запросе логина (`GIT_TERMINAL_PROMPT=0`) и имеет `TimeoutStartSec=2h` вместо бесконечного ожидания.
+- `sync.py` завершается с кодом 1, если хотя бы одна заметка не проиндексировалась. Раньше ошибки только печатались, а systemd/таймер видели успех и молчали о сломанном индексе.

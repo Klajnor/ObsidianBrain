@@ -244,6 +244,7 @@ def sync(dry_run: bool = False) -> int:
     for p in gone:
         remove_note(db, p)
     db.commit()
+    failed = 0
     for i, (rel, abs_path, text, h) in enumerate(todo, 1):
         try:
             index_note(db, rel, abs_path, text, h)
@@ -251,8 +252,11 @@ def sync(dry_run: bool = False) -> int:
             print(f"[{i}/{len(todo)}] {rel!r}")
         except Exception as e:  # одна заметка не должна ронять весь прогон
             db.rollback()
+            failed += 1
             print(f"[{i}/{len(todo)}] ОШИБКА {rel!r}: {e!r}", file=sys.stderr)
-    return 0
+    if failed:
+        print(f"ОШИБОК: {failed}", file=sys.stderr)
+    return 1 if failed else 0
 
 
 def watch(debounce: float = 30.0) -> int:
