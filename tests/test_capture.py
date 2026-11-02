@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 import sqlite3
@@ -56,6 +57,25 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(db.execute("SELECT count(*) FROM notes").fetchone()[0], 1)
         self.assertEqual(db.execute("SELECT count(*) FROM fts_chunks WHERE fts_chunks MATCH 'поиска'").fetchone()[0], 1)
 
+    def test_concurrent_sync_index_is_idempotent(self):
+        result = self.capture.create_note("race", "race")
+        target = next((self.vault / "Telegram").glob("*.md"))
+        text = target.read_text(encoding="utf-8")
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        db = self.connect()
+        self.addCleanup(db.close)
+        before = tuple(
+            db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in ("notes", "fts_notes", "chunks", "fts_chunks")
+        )
+        self.capture._index_note(db, result["path"], target, "race", text, "race", digest)
+        db.commit()
+        after = tuple(
+            db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in ("notes", "fts_notes", "chunks", "fts_chunks")
+        )
+        self.assertEqual(before, after)
+
     def test_conflict_never_overwrites_file(self):
         self.capture.create_note("original", "same")
         with self.assertRaises(ValueError):
@@ -93,8 +113,12 @@ class CaptureTests(unittest.TestCase):
         self.assertFalse((self.vault / "Telegram").exists())
 
     def test_index_failure_can_be_retried(self):
-        with patch.object(self.capture, "connect", side_effect=sqlite3.OperationalError), self.assertRaises(sqlite3.OperationalError):
+        with (
+            patch.object(self.capture, "connect", side_effect=sqlite3.OperationalError),
+            self.assertRaises(self.capture.WriteError) as caught,
+        ):
             self.capture.create_note("retained", "id")
+        self.assertIn("stage=index", str(caught.exception))
         self.assertEqual(len(list((self.vault / "Telegram").glob("*.md"))), 1)
         self.capture.create_note("retained", "id")
         db = self.connect()
