@@ -39,7 +39,10 @@ def create_note(content: str, request_id: str) -> dict:
         if target.is_symlink() or target.read_text(encoding="utf-8") != text:
             raise ValueError("Конфликт request_id: существующая заметка не изменена") from None
 
-    title = content.strip().splitlines()[0].lstrip("# ")[:120] or "Telegram"
+    first_line = content.strip().splitlines()[0].lstrip("# ")
+    # Текст приходит из сообщения: убираем управляющие символы (ANSI и т.п.),
+    # чтобы заголовок не ломал терминал/журнал и не уезжал в поиск как есть.
+    title = " ".join("".join(ch for ch in first_line if ch.isprintable()).split())[:120] or "Telegram"
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     # При сбое индексации новый файл остаётся: повтор безопасно достроит индекс,
     # а обычный sync подхватит его без потери текста.

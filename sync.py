@@ -223,7 +223,7 @@ def sync(dry_run: bool = False) -> int:
         except OSError as e:  # недоступный файл не должен ронять прогон
             if rel in known:
                 seen.add(rel)  # временно не читается – прежнюю запись из БД не удаляем
-            print(f"ПРОПУСК {rel}: {e}", file=sys.stderr)
+            print(f"ПРОПУСК {rel!r}: {e!r}", file=sys.stderr)
             continue
         if not text.strip():
             continue  # пустая заметка не индексируется; прежняя запись уйдёт в «исчезнувшие»
@@ -236,9 +236,9 @@ def sync(dry_run: bool = False) -> int:
     print(f"к обработке: {len(todo)}, к удалению: {len(gone)}, без изменений: {len(seen) - len(todo)}")
     if dry_run:
         for rel, *_ in todo:
-            print("  +", rel)
+            print(f"  + {rel!r}")
         for p in gone:
-            print("  -", p)
+            print(f"  - {p!r}")
         return 0
 
     for p in gone:
@@ -248,10 +248,10 @@ def sync(dry_run: bool = False) -> int:
         try:
             index_note(db, rel, abs_path, text, h)
             db.commit()
-            print(f"[{i}/{len(todo)}] {rel}")
+            print(f"[{i}/{len(todo)}] {rel!r}")
         except Exception as e:  # одна заметка не должна ронять весь прогон
             db.rollback()
-            print(f"[{i}/{len(todo)}] ОШИБКА {rel}: {e}", file=sys.stderr)
+            print(f"[{i}/{len(todo)}] ОШИБКА {rel!r}: {e!r}", file=sys.stderr)
     return 0
 
 

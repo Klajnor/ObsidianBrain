@@ -72,6 +72,15 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(db.execute("SELECT content_hash FROM notes").fetchone()[0],
                          hashlib.sha256(text.encode("utf-8")).hexdigest())
 
+    def test_title_has_no_control_chars(self):
+        self.capture.create_note("bad\x1b[31m title\nsecond", "ctrl")
+        db = self.connect()
+        self.addCleanup(db.close)
+        title = db.execute("SELECT title FROM notes").fetchone()[0]
+        self.assertNotIn("\x1b", title)
+        self.assertNotIn("\n", title)
+        self.assertTrue(title.strip())
+
     def test_disabled_and_invalid_input(self):
         with patch.dict(os.environ, {"BRAIN_WRITE_ENABLED": "false"}), self.assertRaises(ValueError):
             self.capture.create_note("data", "id")
