@@ -1,10 +1,19 @@
 """MCP-сервер «второго мозга»: поиск по карточкам и выдача текста заметок."""
 import json
+import os
+
+# MCP не вызывает LLM: не подхватываем ключ из .env и убираем его из окружения
+# (он мог прийти от родительского процесса). Сделано до импорта common.
+os.environ["BRAIN_ENV_SKIP"] = ",".join(
+    filter(None, ["LLM_API_KEY", os.environ.get("BRAIN_ENV_SKIP", "")])
+)
 
 from mcp.server.mcpserver import MCPServer
 
 from common import EXCLUDE_DIRS, EXCLUDE_FILES, VAULTS, connect, fts_query
 from capture import create_note as capture_note
+
+os.environ.pop("LLM_API_KEY", None)
 
 mcp = MCPServer("brain")
 
