@@ -96,7 +96,7 @@ def list_notes(doc_type: str = "", limit: int = 50) -> list[dict]:
 
 
 if os.environ.get("BRAIN_WRITE_ENABLED", "false").lower() == "true":
-    from capture import create_note as capture_note
+    from capture import WriteError, create_note as capture_note
 
     @mcp.tool()
     def create_note(content: str, request_id: str) -> dict:
@@ -105,7 +105,24 @@ if os.environ.get("BRAIN_WRITE_ENABLED", "false").lower() == "true":
         Не изменяет существующие файлы. Повтор с тем же request_id не создаёт дубликат.
         Авторизацию владельца обязан проверить вызывающий клиент.
         """
-        return capture_note(content, request_id)
+        try:
+            return capture_note(content, request_id)
+        except WriteError as exc:
+            # Код стадии уже безопасен: без путей и текста заметки.
+            return {"git_pushed": False, "error": str(exc)}
+        except ValueError as exc:
+            # Ошибка валидации/конфликта request_id; текст фиксированный.
+            return {"git_pushed": False, "error": f"stage=validate: {type(exc).__name__}"}
+        except RuntimeError as exc:
+            message = str(exc)
+            if message.startswith((
+                "Ошибка Git (", "Git недоступен", "Хранилище должно быть",
+                "Для ветки", "Есть посторонние", "Созданный файл",
+            )):
+                return {"git_pushed": False, "error": message}
+            return {"git_pushed": False, "error": f"stage=internal: {type(exc).__name__}"}
+        except Exception as exc:  # noqa: BLE001 - вернуть клиенту безопасную стадию
+            return {"git_pushed": False, "error": f"stage=internal: {type(exc).__name__}"}
 
 
 if __name__ == "__main__":
