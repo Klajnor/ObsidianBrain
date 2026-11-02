@@ -7,7 +7,9 @@
 ### Добавлено
 
 - `capture.py` и MCP-инструмент `create_note`: создание только новых заметок в `Telegram/` первого хранилища при `BRAIN_WRITE_ENABLED=true`, без LLM и без перезаписи существующих файлов.
-- Тесты `tests/test_capture.py` на временном хранилище и БД.
+- `git_publish.py`: публикация созданной Telegram-заметки отдельным коммитом и push точного SHA в upstream без force/тегов/submodules.
+- `install-systemd.sh`: копирование `brain-sync`/`brain-pull` в `/etc/systemd/system`, `daemon-reload` и выбор варианта `sync`/`pull`/`all`.
+- Тесты `tests/test_capture.py` и `tests/test_git_publish.py` на временном хранилище/БД и локальных bare-репозиториях.
 
 ### Безопасность
 

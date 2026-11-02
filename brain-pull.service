@@ -10,8 +10,7 @@
 #   VAULT_PATH в /opt/brain/.env должен указывать на /srv/obsidian-vault —
 #   абсолютным путём или относительно каталога репозитория.
 # Установка:
-#   sudo cp brain-pull.service brain-pull.timer /etc/systemd/system/
-#   sudo systemctl daemon-reload
+#   sudo ./install-systemd.sh pull
 #   sudo systemctl enable --now brain-pull.timer
 # Логи: journalctl -u brain-pull.service -f
 # (Секция [Install] здесь намеренно не нужна: включается только таймер.)

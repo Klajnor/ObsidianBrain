@@ -2,8 +2,7 @@
 # Здесь и ниже путь к репозиторию — /opt/brain, пользователь — brain; замени на свои.
 #
 # Установка:
-#   sudo cp brain-sync.service /etc/systemd/system/
-#   sudo systemctl daemon-reload
+#   sudo ./install-systemd.sh sync
 #   sudo systemctl enable --now brain-sync
 # Логи: journalctl -u brain-sync -f
 #

@@ -64,6 +64,16 @@ MCP не вызывает LLM, поэтому не подхватывает `LLM
 - `python sync.py --watch` — следить за хранилищами и переиндексировать на лету (не подходит для хранилищ, смонтированных по NFS/SMB — события файловой системы туда не доходят);
 - Linux-сервер: готовые примеры — `brain-sync.service` (демон `--watch`) или `brain-pull.timer` + `brain-pull.service` (раз в 5 минут: `git pull` хранилища + `sync.py`). Установка описана в комментариях внутри файлов.
 
+Установка юнитов (Linux, от root):
+
+```bash
+sudo ./install-systemd.sh sync    # brain-sync.service
+sudo ./install-systemd.sh pull    # brain-pull.service + brain-pull.timer
+sudo ./install-systemd.sh         # все файлы
+```
+
+Скрипт копирует файлы в `/etc/systemd/system` и делает `systemctl daemon-reload`; включение и запуск — вручную (`systemctl enable --now ...`). Варианты `sync` и `pull` взаимоисключающие, включайте один.
+
 Индекс — `data/brain.db` (в git не попадает) и полностью пересобирается: после смены схемы или LLM-модели достаточно удалить файл и снова запустить `sync.py`.
 
 ## Приватность
