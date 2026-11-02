@@ -100,7 +100,7 @@ if os.environ.get("BRAIN_WRITE_ENABLED", "false").lower() == "true":
 
     @mcp.tool()
     def create_note(content: str, request_id: str) -> dict:
-        """Создать новую Telegram-заметку (нужен BRAIN_WRITE_ENABLED=true).
+        """Создать новую Telegram-заметку и отправить её в Git (BRAIN_WRITE_ENABLED=true).
 
         Не изменяет существующие файлы. Повтор с тем же request_id не создаёт дубликат.
         Авторизацию владельца обязан проверить вызывающий клиент.

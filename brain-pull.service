@@ -5,7 +5,8 @@
 # Подготовка (один раз):
 #   sudo -u brain git clone <URL-хранилища> /srv/obsidian-vault
 #   Для приватного репозитория дай пользователю brain доступ: SSH deploy key
-#   или credential helper с PAT (obsidian-git на десктопе сам коммитит и пушит).
+#   или credential helper с PAT. При BRAIN_WRITE_ENABLED=true нужен доступ
+#   на запись: MCP сам коммитит созданную Telegram-заметку и выполняет push.
 #   VAULT_PATH в /opt/brain/.env должен указывать на /srv/obsidian-vault —
 #   абсолютным путём или относительно каталога репозитория.
 # Установка:
@@ -30,7 +31,8 @@ User=brain
 Group=brain
 # Несколько ExecStart у oneshot выполняются по порядку; сбой прерывает цепочку
 # (нет сети -> pull не удался -> sync пропущен; таймер повторит через 5 минут).
-# --ff-only: сервер — только зеркало, локальных коммитов в хранилище быть не должно.
+# --ff-only не разрешает расхождение веток. При неудавшемся push из MCP сначала
+# повторите сохранение; если remote изменился параллельно — разберите вручную.
 WorkingDirectory=/opt/brain
 # Не зависать на запросе логина/пароля в неинтерактивном юните.
 Environment=GIT_TERMINAL_PROMPT=0

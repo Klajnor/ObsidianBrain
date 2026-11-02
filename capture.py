@@ -5,14 +5,23 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from contextlib import closing
 from datetime import datetime, timezone
 
 from common import VAULTS, connect, stem_text
+from git_publish import publish_note
+
+_WRITE_LOCK = threading.Lock()
 
 
 def create_note(content: str, request_id: str) -> dict:
-    """Создать заметку в первом хранилище и сразу добавить её в FTS, без LLM."""
+    """Создать и индексировать заметку, затем закоммитить и отправить в Git."""
+    with _WRITE_LOCK:
+        return _create_note(content, request_id)
+
+
+def _create_note(content: str, request_id: str) -> dict:
     if os.environ.get("BRAIN_WRITE_ENABLED", "false").lower() != "true":
         raise ValueError("Запись выключена: задайте BRAIN_WRITE_ENABLED=true в окружении MCP-сервера")
     if not content.strip() or len(content) > 100_000:
@@ -51,20 +60,27 @@ def create_note(content: str, request_id: str) -> dict:
         if existing is not None:
             if existing["content_hash"] != digest:
                 raise ValueError("Заметка уже изменена: перезапись запрещена")
-            return {"path": path, "created": False}
-        cursor = db.execute(
-            "INSERT INTO notes(path,content_hash,mtime,title,summary,keywords,entities,questions,doc_type,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (path, digest, target.stat().st_mtime, title, content[:1000],
-             json.dumps(["Telegram"]), "[]", "[]", "clippings", datetime.now(timezone.utc).isoformat()),
-        )
-        db.execute("INSERT INTO fts_notes(rowid,title,summary,keywords,questions) VALUES (?,?,?,?,?)",
-                   (cursor.lastrowid, stem_text(title), stem_text(content[:1000]), stem_text("Telegram"), ""))
-        # Небольшие фрагменты сразу доступны через get_chunk.
-        for start in range(0, len(text), 4000):
-            chunk = text[start:start + 4000]
-            cursor = db.execute("INSERT INTO chunks(path,heading,text,chunk_hash) VALUES (?,?,?,?)",
-                                (path, title, chunk, hashlib.sha256(chunk.encode("utf-8")).hexdigest()))
-            db.execute("INSERT INTO fts_chunks(rowid,heading,text) VALUES (?,?,?)",
-                       (cursor.lastrowid, stem_text(title), stem_text(chunk)))
-    return {"path": path, "created": created}
+        else:
+            _index_note(db, path, target, content, text, title, digest)
+    # Даже для уже существующей заметки повторяем push: прошлый мог не удаться.
+    publish_note(vault, target)
+    return {"path": path, "created": created, "git_pushed": True}
+
+
+def _index_note(db, path, target, content, text, title, digest):
+    """Индексировать новый файл в одной транзакции."""
+    cursor = db.execute(
+        "INSERT INTO notes(path,content_hash,mtime,title,summary,keywords,entities,questions,doc_type,updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (path, digest, target.stat().st_mtime, title, content[:1000],
+         json.dumps(["Telegram"]), "[]", "[]", "clippings", datetime.now(timezone.utc).isoformat()),
+    )
+    db.execute("INSERT INTO fts_notes(rowid,title,summary,keywords,questions) VALUES (?,?,?,?,?)",
+               (cursor.lastrowid, stem_text(title), stem_text(content[:1000]), stem_text("Telegram"), ""))
+    # Небольшие фрагменты сразу доступны через get_chunk.
+    for start in range(0, len(text), 4000):
+        chunk = text[start:start + 4000]
+        cursor = db.execute("INSERT INTO chunks(path,heading,text,chunk_hash) VALUES (?,?,?,?)",
+                            (path, title, chunk, hashlib.sha256(chunk.encode("utf-8")).hexdigest()))
+        db.execute("INSERT INTO fts_chunks(rowid,heading,text) VALUES (?,?,?)",
+                   (cursor.lastrowid, stem_text(title), stem_text(chunk)))

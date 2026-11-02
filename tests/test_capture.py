@@ -38,6 +38,9 @@ class CaptureTests(unittest.TestCase):
         self.capture = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, {"common": common}):
             spec.loader.exec_module(self.capture)
+        publisher = patch.object(self.capture, "publish_note")
+        self.publish = publisher.start()
+        self.addCleanup(publisher.stop)
         self.env = patch.dict(os.environ, {"BRAIN_WRITE_ENABLED": "true"})
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -97,6 +100,17 @@ class CaptureTests(unittest.TestCase):
         db = self.connect()
         self.addCleanup(db.close)
         self.assertEqual(db.execute("SELECT count(*) FROM notes").fetchone()[0], 1)
+
+    def test_push_failure_keeps_note_and_retry_publishes_without_duplicate(self):
+        self.publish.side_effect = RuntimeError("push failed")
+        with self.assertRaises(RuntimeError):
+            self.capture.create_note("retained", "push-retry")
+        self.assertEqual(len(list((self.vault / "Telegram").glob("*.md"))), 1)
+        self.publish.side_effect = None
+        result = self.capture.create_note("retained", "push-retry")
+        self.assertFalse(result["created"])
+        self.assertTrue(result["git_pushed"])
+        self.assertEqual(self.publish.call_count, 2)
 
 
 if __name__ == "__main__":
