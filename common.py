@@ -2,6 +2,7 @@
 import os
 import re
 import sqlite3
+import stat
 from pathlib import Path
 from urllib.parse import quote
 
@@ -111,12 +112,48 @@ def connect(readonly: bool = False) -> sqlite3.Connection:
     return db
 
 
+def _is_link(path: Path) -> bool:
+    """Симлинк или junction: может увести чтение за пределы хранилища."""
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction is not None:  # Python 3.12+
+        try:
+            return bool(is_junction())
+        except OSError:
+            return True
+    if os.name == "nt":  # Python 3.10–3.11: различаем junction по reparse tag
+        try:
+            info = os.lstat(path)
+        except OSError:
+            return True
+        return getattr(info, "st_reparse_tag", 0) == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+    return False
+
+
 def iter_notes():
-    """Путь заметки в БД: <имя каталога хранилища>/<путь внутри хранилища>."""
+    """Путь заметки в БД: <имя каталога хранилища>/<путь внутри хранилища>.
+
+    Симлинки и junction не индексируем: иначе заметка-ссылка может прочитать
+    файл снаружи хранилища и отправить его в LLM. Повторные пути к одному
+    файлу (например, через junction-петлю) схлопываем по resolved-пути.
+    """
     for root in VAULTS:
-        for p in sorted(root.rglob("*.md")):
-            rel = p.relative_to(root)
-            # служебные каталоги исключаем на любой глубине (вложенный .git и т.п.)
-            if any(part in EXCLUDE_DIRS for part in rel.parts) or p.name in EXCLUDE_FILES:
-                continue
-            yield p, f"{root.name}/{rel.as_posix()}"
+        root = root.resolve()
+        seen: set[Path] = set()
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            here = Path(dirpath)
+            # служебные каталоги и ссылки исключаем на любой глубине
+            dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDE_DIRS and not _is_link(here / d))
+            for name in sorted(filenames):
+                if not name.endswith(".md") or name in EXCLUDE_FILES:
+                    continue
+                p = here / name
+                if _is_link(p):
+                    continue
+                real = p.resolve()
+                if root not in real.parents or real in seen:
+                    continue
+                seen.add(real)
+                rel = real.relative_to(root)
+                yield real, f"{root.name}/{rel.as_posix()}"
