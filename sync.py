@@ -13,6 +13,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from common import EXCLUDE_DIRS, VAULTS, connect, iter_notes, stem_text
 
@@ -30,6 +31,24 @@ JSON_HINT = (
 _client = None
 
 
+def _check_base_url(url: str | None) -> str | None:
+    """Не отправлять ключ и заметки открытым текстом по HTTP вне localhost."""
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise SystemExit("LLM_BASE_URL должен начинаться с http:// или https://")
+    if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        if os.environ.get("LLM_ALLOW_HTTP", "").lower() not in {"1", "true", "yes"}:
+            raise SystemExit(
+                "LLM_BASE_URL по HTTP небезопасен: ключ и текст заметок пойдут открытым текстом. "
+                "Используйте HTTPS или localhost/127.0.0.1/::1; для осознанного исключения задайте LLM_ALLOW_HTTP=1."
+            )
+        print(f"ПРЕДУПРЕЖДЕНИЕ: LLM_BASE_URL по HTTP ({parsed.hostname}) — трафик не шифруется",
+              file=sys.stderr)
+    return url
+
+
 def client():
     global _client
     if _client is None:
@@ -38,7 +57,7 @@ def client():
         if not os.environ.get("LLM_MODEL"):
             raise SystemExit("Не задан LLM_MODEL (имя модели) – см. .env.example")
         _client = OpenAI(
-            base_url=os.environ.get("LLM_BASE_URL") or None,
+            base_url=_check_base_url(os.environ.get("LLM_BASE_URL") or None),
             api_key=os.environ.get("LLM_API_KEY") or "none",  # локальным серверам ключ не нужен
             timeout=float(os.environ.get("LLM_TIMEOUT", "120")),
         )
