@@ -32,11 +32,14 @@ Group=brain
 # (нет сети -> pull не удался -> sync пропущен; таймер повторит через 5 минут).
 # --ff-only: сервер — только зеркало, локальных коммитов в хранилище быть не должно.
 WorkingDirectory=/opt/brain
+# Не зависать на запросе логина/пароля в неинтерактивном юните.
+Environment=GIT_TERMINAL_PROMPT=0
 ExecStart=/usr/bin/git -C /srv/obsidian pull --ff-only
 ExecStart=/usr/bin/git -C /srv/obsidian-personal pull --ff-only
 ExecStart=/opt/brain/.venv/bin/python /opt/brain/sync.py
-# Первый полный прогон (пустая data/brain.db) может занять десятки минут — без лимита времени
-TimeoutStartSec=0
+# Первый полный прогон (пустая data/brain.db) может занять десятки минут;
+# потолок нужен, чтобы зависший git/LLM не блокировал таймер навсегда.
+TimeoutStartSec=2h
 # Hardening: запись – только в клоны хранилищ и data/; домашний каталог – только чтение
 # (оттуда git/ssh берут креды и ключи). Если пути лежат в /home – подстрой ProtectHome.
 NoNewPrivileges=true
@@ -46,3 +49,16 @@ ProtectHome=read-only
 PrivateTmp=true
 # В БД лежит полный текст заметок, а в .env — ключ API: не даём читать их другим.
 UMask=0077
+# Дополнительное ограничение поверхности атаки: процессу не нужны устройства,
+# модули ядра, namespaces, realtime и capabilities.
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

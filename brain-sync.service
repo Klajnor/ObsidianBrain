@@ -43,6 +43,19 @@ ProtectHome=true
 PrivateTmp=true
 # В БД лежит полный текст заметок, а в .env — ключ API: не даём читать их другим.
 UMask=0077
+# Дополнительное ограничение поверхности атаки: процессу не нужны устройства,
+# модули ядра, namespaces, realtime и capabilities.
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
 WantedBy=multi-user.target

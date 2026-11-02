@@ -20,3 +20,4 @@
 - Пути в логах `sync.py` печатаются через `repr`, а заголовок Telegram-заметки очищается от управляющих символов: имя файла или первая строка сообщения больше не могут вставить ANSI-последовательности/переводы строк в терминал и journald.
 - `VAULT_PATH` больше не принимает корень файловой системы (`/`, `C:\`): иначе индексировалась бы вся ФС, а `get_note` мог бы отдать любой `.md` на диске.
 - `.gitignore` не даёт случайно закоммитить `.env.*`, `*.db`/`*.db-wal`/`*.db-shm`, `.venv`; в `requirements.txt` добавлены верхние границы мажорных версий зависимостей.
+- systemd-юниты дополнительно ограничены (`PrivateDevices`, `ProtectKernel*`, `RestrictNamespaces`/`Realtime`/`SUIDSGID`, `LockPersonality`, пустой `CapabilityBoundingSet`, `RestrictAddressFamilies`). `brain-pull.service` не зависает на запросе логина (`GIT_TERMINAL_PROMPT=0`) и имеет `TimeoutStartSec=2h` вместо бесконечного ожидания.
