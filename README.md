@@ -156,6 +156,24 @@ helper **с правом записи** в remote (read-only deploy key боль
 которая видит недоверенные заметки: prompt injection может инициировать запись.
 Права проверяет клиент.
 
+### Проверка готовности записи
+
+На сервере запустите скрипт **тем же пользователем и с теми же переменными**,
+что у MCP-сервера (особенно `VAULT_PATH` и `BRAIN_WRITE_ENABLED`):
+
+```bash
+cd /opt/ObsidianBrain
+BRAIN_WRITE_ENABLED=true .venv/bin/python write_doctor.py
+# при необходимости проверить доступ к remote:
+BRAIN_WRITE_ENABLED=true .venv/bin/python write_doctor.py --network
+```
+
+Скрипт проверяет флаг записи, права на хранилище/`Telegram`/SQLite/`.git`,
+корень Git-репозитория, ветку, upstream, `user.name`/`user.email`, staged-файлы и
+локальные коммиты впереди upstream. Секреты, remote URL и заметки не печатаются.
+Если `.mcp.json` задаёт `BRAIN_WRITE_ENABLED` только для MCP-процесса, doctor
+запускайте с этой переменной явно.
+
 Проверка на временных файлах без `.env`, LLM и реального хранилища:
 `python -m unittest discover -s tests -v`.
 

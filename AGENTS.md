@@ -22,6 +22,7 @@
 - `python sync.py --dry-run` — показать, что будет обработано, **без вызовов LLM** (безопасная проверка)
 - `python sync.py` — один проход; `python sync.py --watch` — непрерывно (debounce 30 с)
 - `python mcp_server.py` — запуск MCP-сервера (обычно его стартует клиент по `.mcp.json`)
+- `BRAIN_WRITE_ENABLED=true python write_doctor.py [--network]` — безопасная проверка прав хранилища/SQLite/.git, upstream и Git identity; запускать с теми же env, что у MCP-сервера
 - Примеры systemd-юнитов для Linux-сервера — `brain-sync.service` (`sync.py --watch`, демон) и пара `brain-pull.timer` / `brain-pull.service` (раз в 5 минут: `git pull` хранилища + `sync.py`); установка — `sudo ./install-systemd.sh [sync|pull|all]` (копирует в `/etc/systemd/system` и делает `daemon-reload`). Варианты взаимоисключающие.
 
 Проверка изменений — `--dry-run`; отдельных тестов и линтера нет. Кириллический вывод скриптов в PowerShell отображается кракозябрами — это кодировка консоли, а не ошибка кода.
