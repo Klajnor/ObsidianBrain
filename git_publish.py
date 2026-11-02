@@ -1,8 +1,9 @@
-"""Публикация только созданной заметки, без чужих staged-файлов и коммитов."""
+"""Синхронизация хранилища с origin и публикация только созданной заметки."""
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -32,27 +33,127 @@ def _failure_reason(stderr: str) -> str:
     return "причина скрыта: stderr может содержать секреты"
 
 
-def publish_note(vault: Path, target: Path) -> None:
-    """Коммит и обычный push в upstream; при сбое локальная заметка остаётся."""
+def _environment() -> dict[str, str]:
     environment = os.environ.copy()
     environment["GIT_TERMINAL_PROMPT"] = "0"
     # Не наследуем управление индексом/репозиторием от вызывающего процесса.
     for name in ("GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE"):
         environment.pop(name, None)
+    return environment
+
+
+def _run(
+    vault: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    timeout: float = 60.0,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(vault), *args],
+            env=env or _environment(),
+            capture_output=True,
+            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Git недоступен или превышен таймаут") from exc
+
+
+def _git(
+    vault: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    timeout: float = 60.0,
+    note: bool = True,
+) -> str:
+    result = _run(vault, *args, env=env, timeout=timeout)
+    if result.returncode:
+        suffix = "заметка сохранена локально" if note else "заметка не создана"
+        raise RuntimeError(
+            f"Ошибка Git ({args[0]}): {_failure_reason(result.stderr)}; {suffix}"
+        )
+    return result.stdout.strip()
+
+
+def _remove_conflicting_untracked(vault: Path, upstream: str) -> None:
+    """Удалить только untracked-файлы, которые origin уже отслеживает."""
+    tracked = set(_git(vault, "ls-tree", "-r", "--name-only", upstream, note=False).splitlines())
+    status = _run(vault, "status", "--porcelain", "-z", "--untracked-files=all")
+    if status.returncode:
+        raise RuntimeError("Не удалось прочитать состояние хранилища перед reset")
+    for entry in status.stdout.split("\0"):
+        if not entry.startswith("?? "):
+            continue
+        relative = entry[3:]
+        if relative not in tracked:
+            continue
+        victim = vault / relative
+        try:
+            victim.resolve().relative_to(vault.resolve())
+        except (OSError, ValueError):
+            continue
+        if victim.is_symlink() or victim.is_file():
+            victim.unlink()
+        elif victim.is_dir():
+            shutil.rmtree(victim)
+        parent = victim.parent
+        while parent != vault:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+
+def sync_origin(vault: Path) -> str:
+    """Fetch и выровнять рабочее дерево по origin.
+
+    Обычный fast-forward сохраняет локальные файлы. Если pull невозможен из-за
+    локальных изменений или расхождения веток, origin считается главным:
+    tracked-изменения и локальные коммиты отбрасываются, а untracked-файлы
+    удаляются только там, где origin уже содержит такой путь.
+    """
+    root = Path(_git(vault, "rev-parse", "--show-toplevel", note=False)).resolve()
+    if root != vault.resolve():
+        raise RuntimeError("Хранилище должно быть корнем Git-репозитория")
+    branch = _git(vault, "symbolic-ref", "HEAD", note=False)
+    short_branch = branch.removeprefix("refs/heads/")
+    remote = _git(vault, "config", "--get", f"branch.{short_branch}.remote", note=False)
+    merge = _git(vault, "config", "--get", f"branch.{short_branch}.merge", note=False)
+    if not remote or remote == "." or not merge.startswith("refs/heads/"):
+        raise RuntimeError("Для ветки хранилища нужен upstream удалённого репозитория")
+
+    fetched = _run(vault, "fetch", "--prune", "--", remote, timeout=90)
+    if fetched.returncode:
+        raise RuntimeError(
+            f"Ошибка Git (fetch): {_failure_reason(fetched.stderr)}; заметка не создана"
+        )
+    upstream = _git(vault, "rev-parse", "@{upstream}", note=False)
+    head = _git(vault, "rev-parse", "HEAD", note=False)
+    if head == upstream:
+        return "up-to-date"
+
+    merged = _run(vault, "merge", "--ff-only", upstream, timeout=90)
+    if merged.returncode == 0:
+        return "fast-forward"
+
+    _remove_conflicting_untracked(vault, upstream)
+    reset = _run(vault, "reset", "--hard", upstream, timeout=90)
+    if reset.returncode:
+        raise RuntimeError(
+            f"Ошибка Git (reset): {_failure_reason(reset.stderr)}; заметка не создана"
+        )
+    return "reset-to-origin"
+
+
+def publish_note(vault: Path, target: Path) -> None:
+    """Коммит и обычный push в upstream; при сбое локальная заметка остаётся."""
 
     def git(*args: str, env: dict[str, str] | None = None) -> str:
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(vault), *args],
-                env=env or environment, capture_output=True, timeout=60,
-                encoding="utf-8", errors="replace", check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError("Git недоступен или превышен таймаут; заметка сохранена локально") from exc
-        if result.returncode:
-            # stderr может содержать URL с токеном, имена и содержимое файлов.
-            raise RuntimeError(f"Ошибка Git ({args[0]}): {_failure_reason(result.stderr)}; заметка сохранена локально")
-        return result.stdout.strip()
+        return _git(vault, *args, env=env, note=True)
 
     root = Path(git("rev-parse", "--show-toplevel")).resolve()
     if root != vault.resolve():
@@ -81,7 +182,7 @@ def publish_note(vault: Path, target: Path) -> None:
     # Отдельный индекс гарантирует, что чужие staged-файлы не попадут в коммит.
     published_head = head
     with tempfile.TemporaryDirectory(prefix="brain-git-") as temp:
-        isolated = dict(environment, GIT_INDEX_FILE=str(Path(temp) / "index"))
+        isolated = dict(_environment(), GIT_INDEX_FILE=str(Path(temp) / "index"))
         git("read-tree", head, env=isolated)
         git("add", "--", relative, env=isolated)
         tree = git("write-tree", env=isolated)

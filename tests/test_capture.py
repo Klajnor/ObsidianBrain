@@ -42,6 +42,9 @@ class CaptureTests(unittest.TestCase):
         publisher = patch.object(self.capture, "publish_note")
         self.publish = publisher.start()
         self.addCleanup(publisher.stop)
+        syncer = patch.object(self.capture, "sync_origin", return_value="up-to-date")
+        self.sync = syncer.start()
+        self.addCleanup(syncer.stop)
         self.env = patch.dict(os.environ, {"BRAIN_WRITE_ENABLED": "true"})
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -75,6 +78,14 @@ class CaptureTests(unittest.TestCase):
             for table in ("notes", "fts_notes", "chunks", "fts_chunks")
         )
         self.assertEqual(before, after)
+
+    def test_sync_failure_does_not_create_note(self):
+        self.sync.side_effect = RuntimeError("origin недоступен")
+        with self.assertRaises(self.capture.WriteError) as caught:
+            self.capture.create_note("not created", "sync-fail")
+        self.assertIn("stage=sync", str(caught.exception))
+        self.assertFalse((self.vault / "Telegram").exists())
+        self.publish.assert_not_called()
 
     def test_conflict_never_overwrites_file(self):
         self.capture.create_note("original", "same")

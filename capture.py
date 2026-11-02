@@ -11,7 +11,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 
 from common import VAULTS, connect, stem_text
-from git_publish import publish_note
+from git_publish import publish_note, sync_origin
 
 _WRITE_LOCK = threading.Lock()
 
@@ -39,6 +39,11 @@ def _create_note(content: str, request_id: str) -> dict:
     # read_text и sync нормализуют переводы строк так же; хеш должен совпадать.
     content = content.replace("\r\n", "\n").replace("\r", "\n")
     vault = VAULTS[0].resolve()
+    # Сначала выравниваем хранилище по origin: при расхождении origin главнее.
+    try:
+        sync_origin(vault)
+    except Exception as exc:  # noqa: BLE001 - заметка не должна создаваться без sync
+        raise WriteError("sync", f"{type(exc).__name__}: {exc}") from exc
     folder = vault / "Telegram"
     key = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
     target = folder / f"{key}.md"

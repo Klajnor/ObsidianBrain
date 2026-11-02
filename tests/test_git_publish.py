@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from git_publish import _failure_reason, publish_note
+from git_publish import _failure_reason, publish_note, sync_origin
 
 
 class GitPublishTests(unittest.TestCase):
@@ -56,6 +56,53 @@ class GitPublishTests(unittest.TestCase):
                 self.assertIn(expected, reason)
                 self.assertNotIn("secret-token", reason)
                 self.assertNotIn("/secret/vault", reason)
+
+    def _other_clone(self) -> Path:
+        other = self.root / "other"
+        self.git(self.root, "clone", "-b", "main", str(self.remote), str(other))
+        return other
+
+    def test_sync_fast_forwards_clean_clone(self):
+        other = self._other_clone()
+        (other / "remote.md").write_text("from origin\n", encoding="utf-8")
+        self.git(other, "add", "remote.md")
+        self.git(other, "commit", "-m", "Remote")
+        self.git(other, "push")
+        self.assertEqual(sync_origin(self.vault), "fast-forward")
+        self.assertEqual((self.vault / "remote.md").read_text(encoding="utf-8"), "from origin\n")
+
+    def test_sync_discards_conflicting_local_modification(self):
+        (self.vault / "existing.md").write_text("local edit\n", encoding="utf-8")
+        other = self._other_clone()
+        (other / "existing.md").write_text("origin version\n", encoding="utf-8")
+        self.git(other, "add", "existing.md")
+        self.git(other, "commit", "-m", "Remote edit")
+        self.git(other, "push")
+        self.assertEqual(sync_origin(self.vault), "reset-to-origin")
+        self.assertEqual((self.vault / "existing.md").read_text(encoding="utf-8"), "origin version\n")
+
+    def test_sync_discards_diverged_local_commit(self):
+        (self.vault / "local.md").write_text("local commit\n", encoding="utf-8")
+        self.git(self.vault, "add", "local.md")
+        self.git(self.vault, "commit", "-m", "Local")
+        other = self._other_clone()
+        (other / "remote.md").write_text("remote\n", encoding="utf-8")
+        self.git(other, "add", "remote.md")
+        self.git(other, "commit", "-m", "Remote")
+        self.git(other, "push")
+        self.assertEqual(sync_origin(self.vault), "reset-to-origin")
+        self.assertFalse((self.vault / "local.md").exists())
+        self.assertTrue((self.vault / "remote.md").exists())
+
+    def test_sync_replaces_untracked_file_that_origin_now_tracks(self):
+        other = self._other_clone()
+        (other / "conflict.md").write_text("origin version\n", encoding="utf-8")
+        self.git(other, "add", "conflict.md")
+        self.git(other, "commit", "-m", "Remote conflict")
+        self.git(other, "push")
+        (self.vault / "conflict.md").write_text("local untracked\n", encoding="utf-8")
+        self.assertEqual(sync_origin(self.vault), "reset-to-origin")
+        self.assertEqual((self.vault / "conflict.md").read_text(encoding="utf-8"), "origin version\n")
 
     def test_pushes_only_note_preserves_staged_and_unstaged_changes(self):
         (self.vault / "private.txt").write_text("do not publish", encoding="utf-8")
