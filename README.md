@@ -182,8 +182,10 @@ BRAIN_WRITE_ENABLED=true .venv/bin/python write_doctor.py --network
 ```
 
 Скрипт проверяет флаг записи, права на хранилище/`Telegram`/SQLite/`.git`,
-корень Git-репозитория, ветку, upstream, `user.name`/`user.email`, staged-файлы и
-локальные коммиты впереди upstream. Секреты, remote URL и заметки не печатаются.
+корень Git-репозитория, ветку, upstream, `user.name`/`user.email`, staged-файлы,
+отставание клона от upstream и локальные коммиты. `--network` делает `git fetch`
+и показывает, если клон отстал или ветки разошлись; автоматический merge/rebase
+не выполняется. Секреты, remote URL и заметки не печатаются.
 Если `.mcp.json` задаёт `BRAIN_WRITE_ENABLED` только для MCP-процесса, doctor
 запускайте с этой переменной явно.
 

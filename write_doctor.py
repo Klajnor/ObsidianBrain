@@ -152,6 +152,10 @@ def check(network: bool) -> list[tuple[bool, str]]:
     results.append((writable, message))
 
     if upstream_ok:
+        if network:
+            _, error = _git(vault, "fetch", "--", remote, timeout=45)
+            results.append((not error, f"Git: fetch {'успешен' if not error else error}"))
+
         staged, error = _git(vault, "diff", "--cached", "--name-only")
         if error:
             results.append((False, f"Git: {error}"))
@@ -164,23 +168,29 @@ def check(network: bool) -> list[tuple[bool, str]]:
                     else "Git: есть staged-файлы; публикация не изменяет их, но проверьте вручную",
                 )
             )
-        outgoing, error = _git(vault, "rev-list", "--count", "@{upstream}..HEAD")
+        counts, error = _git(vault, "rev-list", "--left-right", "--count", "@{upstream}...HEAD")
         if error:
             results.append((False, f"Git: {error}"))
-        elif outgoing and int(outgoing) > 0:
+        else:
+            behind, ahead = (int(part) for part in counts.split())
             results.append(
                 (
-                    False,
-                    f"Git: {outgoing} локальных коммитов впереди upstream; "
+                    behind == 0,
+                    "Git: клон не отстаёт от upstream"
+                    if behind == 0
+                    else f"Git: клон отстаёт от upstream на {behind} коммитов; "
+                    "выполните git pull --ff-only (автоматический merge/rebase бот не делает)",
+                )
+            )
+            results.append(
+                (
+                    ahead == 0,
+                    "Git: локальных коммитов впереди upstream нет"
+                    if ahead == 0
+                    else f"Git: {ahead} локальных коммитов впереди upstream; "
                     "автоматический push заблокируется, если среди них есть чужие",
                 )
             )
-        else:
-            results.append((True, "Git: локальных коммитов впереди upstream нет"))
-
-        if network:
-            _, error = _git(vault, "ls-remote", "--exit-code", "--heads", remote, timeout=30)
-            results.append((not error, f"Git: доступ к remote {'есть' if not error else error}"))
     return results
 
 
