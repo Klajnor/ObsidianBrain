@@ -1,4 +1,6 @@
-openai>=1.40
+# Верхние границы — чтобы мажорное обновление не сломало API неожиданно.
+# Для полной воспроизводимости: pip-compile --generate-hashes requirements.in
+openai>=1.40,<3
 mcp>=2,<3
-watchdog>=4
-PyStemmer>=2.2
+watchdog>=4,<7
+PyStemmer>=2.2,<4
