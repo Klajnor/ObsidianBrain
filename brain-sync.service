@@ -22,6 +22,8 @@ Wants=network-online.target
 Type=simple
 # Пользователю нужен доступ на чтение к хранилищам (VAULT_PATH) и на запись в data/;
 # .env с LLM_API_KEY — chmod 600, владелец этот пользователь.
+# UMask ниже создаёт data/ и brain.db (включая -wal/-shm) с правами 700/600.
+# Для уже существующих файлов один раз выполните: chmod 700 data && chmod 600 .env data/brain.db*
 User=brain
 Group=brain
 # WorkingDirectory и EnvironmentFile не нужны: .env и относительные VAULT_PATH
@@ -39,6 +41,8 @@ ProtectSystem=strict
 ReadWritePaths=/opt/brain/data
 ProtectHome=true
 PrivateTmp=true
+# В БД лежит полный текст заметок, а в .env — ключ API: не даём читать их другим.
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

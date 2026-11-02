@@ -8,3 +8,7 @@
 
 - `capture.py` и MCP-инструмент `create_note`: создание только новых заметок в `Telegram/` первого хранилища при `BRAIN_WRITE_ENABLED=true`, без LLM и без перезаписи существующих файлов.
 - Тесты `tests/test_capture.py` на временном хранилище и БД.
+
+### Безопасность
+
+- `brain-sync.service` и `brain-pull.service` теперь выставляют `UMask=0077`: `data/brain.db` (полный текст заметок, включая `-wal`/`-shm`) и `.env` с ключом API создаются с правами `600`, каталог `data/` — `700`. Для уже существующих файлов нужен разовый `chmod 700 data && chmod 600 .env data/brain.db*` (добавлено в README).

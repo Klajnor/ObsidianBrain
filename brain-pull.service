@@ -24,6 +24,8 @@ Wants=network-online.target
 Type=oneshot
 # Пользователь должен иметь право писать в клон хранилища (git pull) и в data/
 # этого репозитория; .env (LLM_API_KEY) — chmod 600, владелец brain.
+# UMask ниже создаёт data/ и brain.db (включая -wal/-shm) с правами 700/600.
+# Для уже существующих файлов один раз выполните: chmod 700 data && chmod 600 .env data/brain.db*
 User=brain
 Group=brain
 # Несколько ExecStart у oneshot выполняются по порядку; сбой прерывает цепочку
@@ -42,3 +44,5 @@ ProtectSystem=strict
 ReadWritePaths=/opt/brain/data /srv/obsidian-vault /srv/obsidian-personal
 ProtectHome=read-only
 PrivateTmp=true
+# В БД лежит полный текст заметок, а в .env — ключ API: не даём читать их другим.
+UMask=0077
