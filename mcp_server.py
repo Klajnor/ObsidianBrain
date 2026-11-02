@@ -21,7 +21,7 @@ def search_notes(query: str, k: int = 8) -> list[dict]:
     q = fts_query(query)
     if not q:
         return []
-    db = connect()
+    db = connect(readonly=True)
     # bm25 отрицательный: меньше = лучше. Карточка весит больше тела заметки.
     scores: dict[str, float] = {}
     for r in db.execute(
@@ -46,7 +46,7 @@ def search_notes(query: str, k: int = 8) -> list[dict]:
 @mcp.tool()
 def get_chunk(chunk_id: int) -> dict:
     """Текст одного фрагмента заметки (id из search_notes)."""
-    r = connect().execute("SELECT path, heading, text FROM chunks WHERE id=?", (chunk_id,)).fetchone()
+    r = connect(readonly=True).execute("SELECT path, heading, text FROM chunks WHERE id=?", (chunk_id,)).fetchone()
     return dict(r) if r else {"error": "не найдено"}
 
 
@@ -71,7 +71,7 @@ def list_notes(doc_type: str = "", limit: int = 50) -> list[dict]:
     sql, args = "SELECT * FROM notes", []
     if doc_type:
         sql, args = sql + " WHERE doc_type=?", [doc_type]
-    return [_card(r) for r in connect().execute(sql + " ORDER BY updated_at DESC LIMIT ?", args + [limit])]
+    return [_card(r) for r in connect(readonly=True).execute(sql + " ORDER BY updated_at DESC LIMIT ?", args + [limit])]
 
 
 @mcp.tool()

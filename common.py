@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
+from urllib.parse import quote
 
 BRAIN_DIR = Path(__file__).resolve().parent
 DB_PATH = BRAIN_DIR / "data" / "brain.db"
@@ -83,7 +84,17 @@ def fts_query(query: str) -> str:
     return " OR ".join(f'"{t}"*' for t in terms)
 
 
-def connect() -> sqlite3.Connection:
+def connect(readonly: bool = False) -> sqlite3.Connection:
+    """Подключение к БД. readonly=True — для MCP: без создания файла, DDL и WAL."""
+    if readonly:
+        if not DB_PATH.exists():
+            raise sqlite3.OperationalError("БД ещё не создана — сначала запустите python sync.py")
+        # mode=ro не даёт MCP случайно (или через будущий баг) изменить индекс.
+        uri = f"file:{quote(DB_PATH.as_posix(), safe='/:')}?mode=ro"
+        db = sqlite3.connect(uri, uri=True, timeout=30)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA query_only = ON")
+        return db
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB_PATH, timeout=30)
     db.row_factory = sqlite3.Row
