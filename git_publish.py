@@ -20,8 +20,19 @@ def _failure_reason(stderr: str) -> str:
         return "не настроены user.name/user.email"
     if "could not resolve host" in text or "could not resolve hostname" in text:
         return "сбой DNS Git"
-    if any(part in text for part in ("authentication failed", "permission denied (publickey)", "could not read username")):
+    if "host key verification failed" in text:
+        return "SSH host key не подтверждён"
+    if any(part in text for part in ("no such identity", "identity file", "load key")):
+        return "SSH-ключ недоступен"
+    if any(part in text for part in (
+        "authentication failed", "permission denied (publickey)", "could not read username",
+        "could not read from remote repository", "repository not found", "terminal prompts disabled",
+    )):
         return "аутентификация Git не удалась"
+    if "connection timed out" in text or "connection refused" in text:
+        return "сетевое подключение к Git не удалось"
+    if "cannot lock ref" in text or "index.lock" in text:
+        return "Git занят другим процессом"
     if "read-only file system" in text:
         return "read-only file system"
     if "permission denied" in text:
