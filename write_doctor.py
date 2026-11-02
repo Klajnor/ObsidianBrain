@@ -191,6 +191,14 @@ def main() -> int:
     results = check(args.network)
     for ok, message in results:
         print(f"{OK if ok else FAIL} {message}")
+    if any("user.name не задан" in message or "user.email не задан" in message for _, message in results):
+        vault = VAULTS[0] if VAULTS else Path("VAULT_PATH")
+        print()
+        print("Задайте identity локально в репозитории (не только в ~/.gitconfig):")
+        print("MCP-процесс может не видеть домашний каталог из-за ProtectHome):")
+        print(f"sudo -u brain git -C '{vault}' config user.name 'Kapum ChatBot'")
+        print(f"sudo -u brain git -C '{vault}' config user.email 'bot@example.com'")
+        print("Укажите свой GitHub-email или noreply-адрес, затем повторите doctor.")
     failed = sum(not ok for ok, _ in results)
     print()
     print("Итог: всё готово" if not failed else f"Итог: проблем — {failed}")

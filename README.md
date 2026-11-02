@@ -127,6 +127,19 @@ helper **с правом записи** в remote (read-only deploy key боль
 должны быть доступны этому пользователю для записи. Секреты не добавляйте в код
 или URL remote; используйте SSH/credential helper.
 
+Identity лучше задать **локально в репозитории хранилища**: MCP-процесс в
+systemd может не видеть `~/.gitconfig` из-за `ProtectHome=true`.
+
+```bash
+sudo -u brain git -C '/opt/brain-vault' config user.name 'Kapum ChatBot'
+sudo -u brain git -C '/opt/brain-vault' config user.email 'bot@example.com'
+```
+
+Укажите свой GitHub-email или noreply-адрес. Если remote доступен по SSH,
+ключ тоже должен быть доступен процессу вне `/home` (например, deploy key в
+`/etc/kapum-chatbot/` и `GIT_SSH_COMMAND`), иначе push из MCP не пройдёт
+аутентификацию, хотя ручной запуск doctor из обычной оболочки будет успешным.
+
 - Чужие staged/unstaged-файлы не затрагиваются: коммит строится отдельным индексом,
   Git-хуки не запускаются. Пушится точный SHA, только в upstream-ветку, без тегов
   и рекурсивной публикации submodules, без force.
