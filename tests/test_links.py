@@ -1,18 +1,26 @@
 """Проверки тегов и связности на временной БД; без .env и реального LLM."""
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-import importlib.util
-import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
-from links import Candidate, candidate_pairs, classify_pair, parse_link, related, save_link
+from links import (
+    Candidate,
+    candidate_pairs,
+    classify_pair,
+    parse_link,
+    record_link_failure,
+    related,
+    save_link,
+)
 from tags import extract_tags, normalize_tag
 
 
@@ -146,6 +154,85 @@ class LinkTests(unittest.TestCase):
         self.assertIn("про SQL", calls["messages"][1]["content"])
         self.assertIn("Общие теги: sql", calls["messages"][1]["content"])
         self.assertIn("Общие ключевые слова/сущности: wait stats", calls["messages"][1]["content"])
+
+    def test_classify_pair_retries_truncated_answer_with_more_tokens(self):
+        answers = [
+            SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content='{"score": 0.5, "common": ["про'),
+                finish_reason="length",
+            )]),
+            SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content='{"score": 0.7, "common": ["sql"], "reason": "ok"}'),
+                finish_reason="stop",
+            )]),
+        ]
+        calls = []
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            return answers[len(calls) - 1]
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        with patch.dict(
+            os.environ, {"LLM_LINK_RETRIES": "1", "LLM_LINK_MAX_TOKENS_CAP": "4000"}
+        ):
+            result = classify_pair(
+                client, "test-model",
+                {"title": "A", "summary": "про SQL", "tags": ["sql"]},
+                {"title": "B", "summary": "тоже про SQL", "tags": ["sql"]},
+                ("sql",),
+            )
+        self.assertEqual(result["score"], 0.7)
+        self.assertEqual(len(calls), 2)
+        self.assertGreater(calls[1]["max_tokens"], calls[0]["max_tokens"])
+
+    def test_classify_pair_reports_empty_answer(self):
+        response = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=""),
+            finish_reason="stop",
+        )])
+
+        def create(**kwargs):
+            return response
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        with (
+            patch.dict(os.environ, {"LLM_LINK_RETRIES": "0"}),
+            self.assertRaisesRegex(ValueError, "пустой ответ"),
+        ):
+            classify_pair(
+                client, "test-model",
+                {"title": "A", "summary": "s"},
+                {"title": "B", "summary": "s"},
+                (),
+            )
+
+    def test_failed_pairs_are_skipped_after_max_attempts(self):
+        self.add_note("v/a.md", ["sql"])
+        self.add_note("v/b.md", ["sql"])
+        record_link_failure(self.db, "v/a.md", "v/b.md", "обрезано")
+        self.db.commit()
+        self.assertEqual(len(candidate_pairs(self.db, max_attempts=2)), 1)
+        record_link_failure(self.db, "v/a.md", "v/b.md", "обрезано")
+        record_link_failure(self.db, "v/a.md", "v/b.md", "обрезано")
+        self.db.commit()
+        self.assertEqual(candidate_pairs(self.db, max_attempts=2), [])
+        # Без ограничения пара снова доступна (например после смены модели).
+        self.assertEqual(len(candidate_pairs(self.db, max_attempts=0)), 1)
+
+    def test_save_link_clears_failure_counter(self):
+        self.add_note("v/a.md", ["sql"])
+        self.add_note("v/b.md", ["sql"])
+        record_link_failure(self.db, "v/a.md", "v/b.md", "обрезано")
+        save_link(
+            self.db,
+            Candidate("v/a.md", "v/b.md", ("sql",), 1.0),
+            {"score": 0.8, "common": ["sql"], "reason": "ok"},
+        )
+        self.db.commit()
+        self.assertEqual(
+            self.db.execute("SELECT COUNT(*) FROM link_failures").fetchone()[0], 0
+        )
 
     def test_related_filters_and_orders(self):
         self.add_note("v/a.md", ["sql"])

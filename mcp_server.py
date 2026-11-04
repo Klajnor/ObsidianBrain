@@ -13,7 +13,7 @@ os.environ["BRAIN_ENV_SKIP"] = ",".join(
 from mcp.server.mcpserver import MCPServer
 
 from common import EXCLUDE_DIRS, EXCLUDE_FILES, VAULTS, connect, fts_query
-from links import related as _related_rows
+from links import candidate_pairs, related as _related_rows
 from logging_setup import setup_file_logging
 
 os.environ.pop("LLM_API_KEY", None)
@@ -34,7 +34,15 @@ def _env_float(name: str, default: float) -> float:
     return max(0.0, min(value, 1.0))
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
 DEFAULT_LINK_SCORE = _env_float("BRAIN_LINK_MIN_SCORE", 0.65)
+DEFAULT_LINK_MAX_ATTEMPTS = _env_int("BRAIN_LINK_MAX_ATTEMPTS", 3)
 
 
 def _tags(db, path: str) -> list[str]:
@@ -149,6 +157,66 @@ def list_notes(doc_type: str = "", limit: int = 50) -> list[dict]:
         sql, args = sql + " WHERE doc_type=?", [doc_type]
     db = connect(readonly=True)
     return [_card(db, r) for r in db.execute(sql + " ORDER BY updated_at DESC LIMIT ?", args + [limit])]
+
+
+@mcp.tool()
+def brain_status() -> dict:
+    """Счётчики индекса для отчёта о статусе: заметки, фрагменты, теги,
+    оценённые связи и очередь неоценённых пар.
+
+    Возвращаются только числа — без путей, заголовков и текста заметок.
+    ``pending_links`` — сколько пар-кандидатов ещё не прошли ИИ-сравнение;
+    ``failed_links`` — сколько пар отложено после ``BRAIN_LINK_MAX_ATTEMPTS``
+    ошибок подряд. Очередь считается тем же правилом, что и ``sync.py``,
+    и может быть ограничена настройками ``BRAIN_LINK_*``.
+    """
+    db = connect(readonly=True)
+
+    def count(sql: str, args: tuple = ()) -> int:
+        try:
+            row = db.execute(sql, args).fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.OperationalError:  # старый индекс без таблицы
+            return 0
+
+    pending = None
+    if os.environ.get("BRAIN_LINKS_ENABLED", "1").lower() not in {"0", "false", "no", "off"}:
+        try:
+            pending = len(
+                candidate_pairs(
+                    db,
+                    set(),
+                    min_score=DEFAULT_LINK_SCORE,
+                    max_per_note=_env_int("BRAIN_LINK_MAX_PER_NOTE", 12),
+                    max_tag_fanout=_env_int("BRAIN_LINK_MAX_TAG_FANOUT", 40),
+                    min_shared_terms=_env_int("BRAIN_LINK_MIN_SHARED_TERMS", 2),
+                    max_term_fanout=_env_int("BRAIN_LINK_MAX_TERM_FANOUT", 30),
+                    max_attempts=DEFAULT_LINK_MAX_ATTEMPTS,
+                )
+            )
+        except sqlite3.OperationalError:  # старый индекс без таблиц связей
+            pending = None
+
+    return {
+        "notes": count("SELECT COUNT(*) FROM notes"),
+        "chunks": count("SELECT COUNT(*) FROM chunks"),
+        "tags": count("SELECT COUNT(DISTINCT tag) FROM note_tags"),
+        "links": count("SELECT COUNT(*) FROM note_links"),
+        "strong_links": count(
+            "SELECT COUNT(*) FROM note_links WHERE score >= ?", (DEFAULT_LINK_SCORE,)
+        ),
+        "pending_links": pending,
+        "failed_links": (
+            count(
+                "SELECT COUNT(*) FROM link_failures WHERE attempts >= ?",
+                (DEFAULT_LINK_MAX_ATTEMPTS,),
+            )
+            if DEFAULT_LINK_MAX_ATTEMPTS > 0
+            else 0
+        ),
+        "links_enabled": pending is not None,
+        "links_min_score": DEFAULT_LINK_SCORE,
+    }
 
 
 if os.environ.get("BRAIN_WRITE_ENABLED", "false").lower() == "true":

@@ -111,6 +111,30 @@ class McpRelatedTests(unittest.TestCase):
         self.assertEqual(rows[0]["related"][0]["path"], "v/b.md")
         self.assertNotIn("summary", rows[0]["related"][0])
 
+    def test_brain_status_returns_counts_only(self):
+        status = self.mcp.brain_status()
+        self.assertEqual(status["notes"], 2)
+        self.assertEqual(status["chunks"], 0)
+        self.assertEqual(status["tags"], 1)
+        self.assertEqual(status["links"], 1)
+        self.assertEqual(status["strong_links"], 1)
+        self.assertEqual(status["pending_links"], 0)
+        self.assertEqual(status["failed_links"], 0)
+        self.assertTrue(status["links_enabled"])
+        # No paths or note text may leak through the status tool.
+        self.assertFalse(any("v/" in str(value) for value in status.values()))
+
+    def test_brain_status_reports_postponed_pairs(self):
+        db = self.connect()
+        db.execute(
+            "INSERT INTO link_failures(path_a,path_b,attempts,last_error,updated_at)"
+            " VALUES ('v/a.md','v/b.md',3,'e','now')"
+        )
+        db.commit()
+        db.close()
+        status = self.mcp.brain_status()
+        self.assertEqual(status["failed_links"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

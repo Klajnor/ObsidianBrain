@@ -45,6 +45,18 @@ CREATE TABLE IF NOT EXISTS note_links (
 CREATE INDEX IF NOT EXISTS note_links_b ON note_links(path_b);
 CREATE INDEX IF NOT EXISTS note_links_score ON note_links(score);
 
+-- Неудачные LLM-сравнения пар: чтобы «ядовитая» пара (пустой/обрезанный ответ)
+-- не занимала очередь каждый прогон, после N ошибок она откладывается.
+CREATE TABLE IF NOT EXISTS link_failures (
+    path_a     TEXT NOT NULL REFERENCES notes(path) ON DELETE CASCADE,
+    path_b     TEXT NOT NULL REFERENCES notes(path) ON DELETE CASCADE,
+    attempts   INTEGER NOT NULL DEFAULT 1,
+    last_error TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (path_a, path_b),
+    CHECK (path_a < path_b)
+);
+
 -- Тексты в fts кладутся уже нормализованными (common.py:stem_text).
 -- kind='note' – карточка (rowid = notes.rowid), kind='chunk' – кусок (rowid = chunks.id).
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_notes USING fts5(

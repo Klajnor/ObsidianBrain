@@ -6,6 +6,7 @@
 
 ### Добавлено
 
+- `brain_status`: служебный MCP-инструмент для отчёта о статусе. Возвращает только числа — заметки, фрагменты, теги, оценённые/сильные связи и очередь неоценённых пар (`candidate_pairs`), — без путей и текста заметок. Бот вызывает его без аргументов и не показывает модели; БД открывается read-only.
 - Понятные имена и ключевые теги Telegram-заметок: `create_note` принимает `title` и `tags` от клиента, очищает имя до ru/en букв и цифр, ограничивает 48 символами без `.md` вместе с уникальным суффиксом и разрешает коллизии без перезаписи. YAML `tags` сразу индексируются в `note_tags`/`keywords`/FTS, исходные теги и текст сохраняются. Полный хеш request_id во frontmatter позволяет повторять сохранение с другими AI-метаданными после сбоя индекса/Git без дубликатов; старые hash-имена не меняются. Сам MCP по-прежнему не вызывает LLM.
 - Связность заметок: `tags.py` извлекает теги Obsidian (frontmatter `tags`/`tag` и инлайновые `#теги`), `sync.py` хранит их в `note_tags`; пары с общими тегами, а для заметок без теговых пар — с общими `keywords`/`entities`, сравниваются ИИ по готовым `summary`, результат (`score`, общие темы, объяснение) кэшируется в `note_links`. Лимиты — `BRAIN_LINKS_ENABLED`, `BRAIN_LINK_MAX_PAIRS`, `BRAIN_LINK_MAX_PER_NOTE`, `BRAIN_LINK_MAX_TAG_FANOUT`, `BRAIN_LINK_MIN_SHARED_TERMS`, `BRAIN_LINK_MAX_TERM_FANOUT`, `BRAIN_LINK_MIN_SCORE`.
 - MCP: `search_notes` возвращает теги и до 3 связанных заметок в карточке (`include_related=false` отключает), добавлен инструмент `get_related(path, k, min_score)`. Связи выдаются только выше `BRAIN_LINK_MIN_SCORE`.
@@ -13,6 +14,13 @@
 - `git_publish.py`: публикация созданной Telegram-заметки отдельным коммитом и push точного SHA в upstream без force/тегов/submodules.
 - `install-systemd.sh`: копирование `brain-sync`/`brain-pull` в `/etc/systemd/system`, `daemon-reload` и выбор варианта `sync`/`pull`/`all`.
 - Тесты `tests/test_capture.py`, `tests/test_git_publish.py`, `tests/test_links.py` и `tests/test_mcp_server.py` на временном хранилище/БД и локальных bare-репозиториях.
+- Полный пересчёт индекса без удаления БД: `sync.py --reindex` переобрабатывает все заметки, игнорируя `content_hash`, `--rebuild-links` очищает оценки и счётчики ошибок связей; вместе — штатный способ пересборки после смены LLM-модели.
+- `brain_status` показывает `failed_links` — пары, отложенные после `BRAIN_LINK_MAX_ATTEMPTS` ошибок.
+
+### Исправлено
+
+- Ошибки `в ответе модели нет JSON-объекта` при пустом/обрезанном ответе LLM: `classify_pair` распознаёт `finish_reason=length` и пустой `content`, повторяет запрос с удвоенным лимитом токенов (`LLM_LINK_RETRIES`, `LLM_LINK_MAX_TOKENS_CAP`), а ошибки ответа учитываются в новой таблице `link_failures`. После `BRAIN_LINK_MAX_ATTEMPTS` (по умолчанию 3) пара откладывается и перестаёт занимать очередь каждый прогон; успешная оценка или `--rebuild-links` счётчик сбрасывают.
+- Удаление заметки теперь явно чистит `chunks`, `note_tags`, `note_links`, `link_failures` и FTS, не полагаясь только на `ON DELETE CASCADE`; в начале каждого прогона `prune_orphans` убирает «сирот», оставшихся от старых версий или БД с выключенными внешними ключами. Удалённая заметка больше не находится поиском и не остаётся в связях.
 
 ### Безопасность
 

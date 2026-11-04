@@ -21,6 +21,7 @@ class McpCaptureTests(unittest.TestCase):
         common.fts_query = Mock()
         links = ModuleType("links")
         links.related = Mock()
+        links.candidate_pairs = Mock(return_value=[])
         capture = ModuleType("capture")
         capture.WriteError = type("WriteError", (RuntimeError,), {})
         capture.create_note = Mock(return_value={"git_pushed": True})

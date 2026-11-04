@@ -1,8 +1,10 @@
 """Инкрементальная дистилляция хранилищ в data/brain.db.
 
-  python sync.py            – обработать новые/изменённые, удалить исчезнувшие
-  python sync.py --dry-run  – только показать, что будет сделано
-  python sync.py --watch    – держать процесс и синхронизировать после правок
+  python sync.py                 – обработать новые/изменённые, удалить исчезнувшие
+  python sync.py --dry-run       – только показать, что будет сделано
+  python sync.py --reindex       – переобработать все заметки (после смены модели)
+  python sync.py --rebuild-links – сбросить оценки связей и пересчитать пары
+  python sync.py --watch         – держать процесс и синхронизировать после правок
 """
 import argparse
 import hashlib
@@ -10,6 +12,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import time
 from collections import defaultdict
@@ -18,7 +21,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from common import EXCLUDE_DIRS, VAULTS, connect, iter_notes, stem_text
-from links import candidate_pairs, classify_pair, save_link
+from links import (
+    candidate_pairs,
+    classify_pair,
+    record_link_failure,
+    reset_links,
+    save_link,
+)
 from logging_setup import setup_file_logging
 from tags import extract_tags
 
@@ -231,7 +240,59 @@ def remove_note(db, path: str):
     db.execute("DELETE FROM fts_notes WHERE rowid=?", (row[0],))
     for (cid,) in db.execute("SELECT id FROM chunks WHERE path=?", (path,)).fetchall():
         db.execute("DELETE FROM fts_chunks WHERE rowid=?", (cid,))
-    db.execute("DELETE FROM notes WHERE path=?", (path,))  # chunks, теги и связи – каскадом
+    # Чистим явно, не полагаясь только на ON DELETE CASCADE: на старых БД
+    # PRAGMA foreign_keys могла быть выключена, и «сироты» оставались навсегда.
+    db.execute("DELETE FROM chunks WHERE path=?", (path,))
+    db.execute("DELETE FROM note_tags WHERE path=?", (path,))
+    db.execute("DELETE FROM note_links WHERE path_a=? OR path_b=?", (path, path))
+    db.execute("DELETE FROM link_failures WHERE path_a=? OR path_b=?", (path, path))
+    db.execute("DELETE FROM notes WHERE path=?", (path,))
+
+
+def prune_orphans(db) -> int:
+    """Удалить строки индекса, оставшиеся от исчезнувших заметок.
+
+    Каскады SQLite работают только при PRAGMA foreign_keys=ON. Если БД когда-то
+    правили другим инструментом или старым кодом, удалённая заметка могла
+    остаться в chunks/тегах/связях/FTS – и находиться поиском. Чистим явно.
+    """
+    statements = (
+        (
+            "DELETE FROM fts_chunks WHERE rowid IN ("
+            " SELECT id FROM chunks WHERE NOT EXISTS ("
+            "  SELECT 1 FROM notes WHERE notes.path = chunks.path))"
+        ),
+        (
+            "DELETE FROM fts_notes WHERE NOT EXISTS ("
+            " SELECT 1 FROM notes WHERE notes.rowid = fts_notes.rowid)"
+        ),
+        (
+            "DELETE FROM chunks WHERE NOT EXISTS ("
+            " SELECT 1 FROM notes WHERE notes.path = chunks.path)"
+        ),
+        (
+            "DELETE FROM fts_chunks WHERE NOT EXISTS ("
+            " SELECT 1 FROM chunks WHERE chunks.id = fts_chunks.rowid)"
+        ),
+        (
+            "DELETE FROM note_tags WHERE NOT EXISTS ("
+            " SELECT 1 FROM notes WHERE notes.path = note_tags.path)"
+        ),
+        (
+            "DELETE FROM note_links WHERE NOT EXISTS ("
+            " SELECT 1 FROM notes WHERE notes.path = note_links.path_a)"
+            " OR NOT EXISTS (SELECT 1 FROM notes WHERE notes.path = note_links.path_b)"
+        ),
+        (
+            "DELETE FROM link_failures WHERE NOT EXISTS ("
+            " SELECT 1 FROM notes WHERE notes.path = link_failures.path_a)"
+            " OR NOT EXISTS (SELECT 1 FROM notes WHERE notes.path = link_failures.path_b)"
+        ),
+    )
+    removed = 0
+    for sql in statements:
+        removed += max(0, db.execute(sql).rowcount)
+    return removed
 
 
 def sync_note_tags(db, tags_by_path: dict[str, list[str]]) -> int:
@@ -250,8 +311,10 @@ def sync_note_tags(db, tags_by_path: dict[str, list[str]]) -> int:
             "INSERT INTO note_tags(path, tag) VALUES (?,?)",
             [(path, tag) for tag in sorted(tag_set)],
         )
-        # Изменился набор тегов – прежние связи этой заметки больше не актуальны.
+        # Изменился набор тегов – прежние связи и счётчики ошибок этой заметки
+        # больше не актуальны.
         db.execute("DELETE FROM note_links WHERE path_a=? OR path_b=?", (path, path))
+        db.execute("DELETE FROM link_failures WHERE path_a=? OR path_b=?", (path, path))
         row = db.execute("SELECT rowid, keywords, entities FROM notes WHERE path=?", (path,)).fetchone()
         if row:
             words = json.loads(row["keywords"]) + json.loads(row["entities"]) + sorted(tag_set)
@@ -277,6 +340,7 @@ def _link_candidates(db, changed: set[str]):
         max_tag_fanout=_env_int("BRAIN_LINK_MAX_TAG_FANOUT", 40),
         min_shared_terms=_env_int("BRAIN_LINK_MIN_SHARED_TERMS", 2),
         max_term_fanout=_env_int("BRAIN_LINK_MAX_TERM_FANOUT", 30),
+        max_attempts=_env_int("BRAIN_LINK_MAX_ATTEMPTS", 3),
     )
 
 
@@ -291,7 +355,10 @@ def build_links(db, changed: set[str]) -> int:
         print(f"связи: ещё {len(candidates) - len(todo)} останутся на следующий прогон")
 
     failed = 0
-    max_tokens = max(100, _env_int("LLM_LINK_MAX_TOKENS", 600))
+    max_tokens = max(100, _env_int("LLM_LINK_MAX_TOKENS", 1200))
+    max_attempts = _env_int("BRAIN_LINK_MAX_ATTEMPTS", 3)
+    llm = client()  # ошибка конфигурации не должна считаться ошибкой конкретной пары
+    model = os.environ["LLM_MODEL"]
     for i, candidate in enumerate(todo, 1):
         rows = {
             row["path"]: row
@@ -320,36 +387,70 @@ def build_links(db, changed: set[str]) -> int:
         }
         try:
             result = classify_pair(
-                client(),
-                os.environ["LLM_MODEL"],
+                llm,
+                model,
                 card_a,
                 card_b,
                 candidate.shared_tags,
                 shared_terms=candidate.shared_terms,
                 max_tokens=max_tokens,
             )
-            save_link(db, candidate, result, model=os.environ["LLM_MODEL"])
+            save_link(db, candidate, result, model=model)
             db.commit()
             print(f"[связи {i}/{len(todo)}] {candidate.path_a!r} <-> {candidate.path_b!r}: {result['score']:.2f}")
         except Exception as exc:  # одна пара не должна ронять весь прогон
             db.rollback()
             failed += 1
+            attempts = None
+            if isinstance(exc, ValueError):
+                # Ошибка ответа модели (пусто/обрезано/не JSON): считаем попытки,
+                # чтобы «ядовитая» пара не занимала очередь каждый прогон.
+                try:
+                    attempts = record_link_failure(
+                        db, candidate.path_a, candidate.path_b, str(exc)
+                    )
+                    db.commit()
+                except sqlite3.Error as record_exc:  # сбой учёта не должен ронять прогон
+                    db.rollback()
+                    logger.error("не удалось записать счётчик ошибок пары: %r", record_exc)
+            detail = ""
+            if attempts:
+                detail = (
+                    f", попытка {attempts}/{max_attempts}"
+                    if max_attempts > 0
+                    else f", попытка {attempts}"
+                )
             print(
-                f"[связи {i}/{len(todo)}] ОШИБКА {candidate.path_a!r} <-> {candidate.path_b!r}: {exc!r}",
+                f"[связи {i}/{len(todo)}] ОШИБКА {candidate.path_a!r} <-> {candidate.path_b!r}{detail}: {exc!r}",
                 file=sys.stderr,
             )
             logger.error(
-                "[связи %s/%s] ОШИБКА %r <-> %r: %r",
-                i, len(todo), candidate.path_a, candidate.path_b, exc,
+                "[связи %s/%s] ОШИБКА %r <-> %r%s: %r",
+                i, len(todo), candidate.path_a, candidate.path_b, detail, exc,
             )
     if failed:
         print(f"ОШИБОК СВЯЗЕЙ: {failed}", file=sys.stderr)
         logger.error("ОШИБОК СВЯЗЕЙ: %s", failed)
+        if max_attempts > 0:
+            print(
+                f"связи: после {max_attempts} ошибок пара откладывается; "
+                "сбросить счётчики – python sync.py --rebuild-links",
+                file=sys.stderr,
+            )
     return failed
 
 
-def sync(dry_run: bool = False) -> int:
+def sync(dry_run: bool = False, reindex: bool = False, rebuild_links: bool = False) -> int:
     db = connect()
+    if not dry_run:
+        orphans = prune_orphans(db)
+        db.commit()
+        if orphans:
+            print(f"очистка индекса: удалено осиротевших строк {orphans}")
+        if rebuild_links:
+            removed = reset_links(db)
+            db.commit()
+            print(f"связи: кэш очищен (удалено оценок: {removed}), пары пересчитаются заново")
     known = {r["path"]: r["content_hash"] for r in db.execute("SELECT path, content_hash FROM notes")}
     seen, todo = set(), []
     tags_by_path: dict[str, list[str]] = {}
@@ -378,14 +479,15 @@ def sync(dry_run: bool = False) -> int:
         seen.add(rel)
         tags_by_path[rel] = extract_tags(text)
         h = sha(text)
-        if known.get(rel) != h:
+        if reindex or known.get(rel) != h:
             todo.append((rel, abs_path, text, h))
     gone = [p for p in known if p not in seen]
 
     skipped = skipped_size + skipped_error + skipped_empty
+    mode = " (--reindex: все заметки)" if reindex else ""
     print(
         f"всего найдено файлов: {total}; к обработке: {len(todo)}, "
-        f"к удалению: {len(gone)}, без изменений: {len(seen) - len(todo)}, пропущено: {skipped}"
+        f"к удалению: {len(gone)}, без изменений: {len(seen) - len(todo)}, пропущено: {skipped}{mode}"
     )
     if dry_run:
         if skipped:
@@ -397,11 +499,14 @@ def sync(dry_run: bool = False) -> int:
             print(f"  + {rel!r}")
         for p in gone:
             print(f"  - {p!r}")
-        links_candidates = _link_candidates(db, {rel for rel, *_ in todo})
-        if links_candidates:
-            # Оценка по текущему индексу: теги только что изменённых заметок
-            # попадут в кандидатов после реальной индексации.
-            print(f"связи: кандидатов {len(links_candidates)}")
+        if rebuild_links:
+            print("связи: кэш оценок будет очищен, пары пересчитаются заново")
+        else:
+            links_candidates = _link_candidates(db, {rel for rel, *_ in todo})
+            if links_candidates:
+                # Оценка по текущему индексу: теги только что изменённых заметок
+                # попадут в кандидатов после реальной индексации.
+                print(f"связи: кандидатов {len(links_candidates)}")
         return 0
 
     for p in gone:
@@ -475,5 +580,21 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--watch", action="store_true")
+    ap.add_argument(
+        "--reindex",
+        action="store_true",
+        help="переиндексировать все заметки, даже если content_hash не изменился",
+    )
+    ap.add_argument(
+        "--rebuild-links",
+        action="store_true",
+        help="удалить все оценки и счётчики ошибок связей, затем пересчитать пары",
+    )
     args = ap.parse_args()
-    sys.exit(watch() if args.watch else sync(args.dry_run))
+    if args.watch and (args.reindex or args.rebuild_links):
+        ap.error("--reindex и --rebuild-links выполняются разово: запустите их без --watch")
+    sys.exit(
+        watch()
+        if args.watch
+        else sync(args.dry_run, reindex=args.reindex, rebuild_links=args.rebuild_links)
+    )

@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -23,6 +24,13 @@ class Candidate:
     shared_tags: tuple[str, ...]
     weight: float
     shared_terms: tuple[str, ...] = ()
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
 
 
 def _norm_term(value) -> str:
@@ -67,12 +75,14 @@ def candidate_pairs(
     max_tag_fanout: int = 40,
     min_shared_terms: int = 2,
     max_term_fanout: int = 30,
+    max_attempts: int = 3,
 ) -> list[Candidate]:
     """Пары-кандидаты: сначала общие теги, затем fallback по keywords/entities.
 
     Теги остаются главным критерием: fallback добавляет только пары, в которых
     ни у одной заметки нет теговой пары-кандидата. Массовые теги и термины
-    пропускаются, иначе один общий термин порождает тысячи пар.
+    пропускаются, иначе один общий термин порождает тысячи пар. Пары, набравшие
+    max_attempts ошибок ответа модели, не выбираются (0 — без ограничения).
     """
     if max_per_note <= 0 or max_tag_fanout < 2:
         return []
@@ -100,6 +110,18 @@ def candidate_pairs(
         (row["path_a"], row["path_b"])
         for row in db.execute("SELECT path_a, path_b FROM note_links")
     }
+    failed: set[tuple[str, str]] = set()
+    if max_attempts > 0:
+        try:
+            failed = {
+                (row["path_a"], row["path_b"])
+                for row in db.execute(
+                    "SELECT path_a, path_b FROM link_failures WHERE attempts >= ?",
+                    (max_attempts,),
+                )
+            }
+        except sqlite3.OperationalError:  # БД старой версии без таблицы ошибок
+            failed = set()
     good = Counter()
     for row in db.execute(
         "SELECT path_a, path_b FROM note_links WHERE score >= ?", (min_score,)
@@ -172,7 +194,7 @@ def candidate_pairs(
 
     selected: list[Candidate] = []
     for (path_a, path_b), info in sorted(pair_info.items(), key=priority):
-        if (path_a, path_b) in analyzed:
+        if (path_a, path_b) in analyzed or (path_a, path_b) in failed:
             continue
         if not info["tags"] and len(set(info["terms"])) < min_shared_terms:
             continue
@@ -227,6 +249,40 @@ def parse_link(raw: str) -> dict:
     raise ValueError(f"в ответе модели нет JSON-объекта: {raw[:200]!r}")
 
 
+def _answer_text(response) -> tuple[str, str, str | None]:
+    """Текст ответа, reasoning-текст (если провайдер его прислал) и finish_reason."""
+    choice = response.choices[0]
+    message = choice.message
+    content = str(getattr(message, "content", None) or "")
+    reasoning = str(
+        getattr(message, "reasoning_content", None)
+        or getattr(message, "reasoning", None)
+        or ""
+    )
+    return content, reasoning, getattr(choice, "finish_reason", None)
+
+
+def _parse_answer(response, max_tokens: int) -> dict:
+    """Разобрать ответ; пустой/обрезанный ответ – понятная ошибка, а не «нет JSON»."""
+    content, reasoning, finish = _answer_text(response)
+    for raw in (content, reasoning):
+        if not raw.strip():
+            continue
+        try:
+            return parse_link(raw)
+        except ValueError:
+            continue
+    if finish == "length":
+        raise ValueError(
+            f"ответ модели обрезан по лимиту токенов (finish_reason=length, max_tokens={max_tokens})"
+        )
+    if not content.strip() and not reasoning.strip():
+        raise ValueError(
+            f"модель вернула пустой ответ (finish_reason={finish!r}, max_tokens={max_tokens})"
+        )
+    raise ValueError(f"в ответе модели нет JSON-объекта: {content[:200]!r}")
+
+
 def classify_pair(
     client,
     model: str,
@@ -235,9 +291,9 @@ def classify_pair(
     shared_tags: tuple[str, ...] | list[str],
     *,
     shared_terms: tuple[str, ...] | list[str] = (),
-    max_tokens: int = 600,
+    max_tokens: int = 1200,
 ) -> dict:
-    """Сравнить две карточки заметок одним LLM-запросом."""
+    """Сравнить две карточки заметок; при пустом/битом ответе – повтор с запасом."""
     content = (
         f"Общие теги: {_join_labels(shared_tags) or '—'}\n"
         f"Общие ключевые слова/сущности: {_join_labels(shared_terms) or '—'}\n\n"
@@ -251,17 +307,28 @@ def classify_pair(
     kwargs = {}
     if os.environ.get("LLM_JSON_MODE", "1") != "0":
         kwargs["response_format"] = {"type": "json_object"}
-    response = client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        temperature=0.0,
-        messages=[
-            {"role": "system", "content": LINK_PROMPT},
-            {"role": "user", "content": content},
-        ],
-        **kwargs,
-    )
-    return parse_link(response.choices[0].message.content or "")
+    budget = max(100, int(max_tokens))
+    retries = max(0, min(_env_int("LLM_LINK_RETRIES", 1), 5))
+    cap = max(budget, _env_int("LLM_LINK_MAX_TOKENS_CAP", 4000))
+    for attempt in range(retries + 1):
+        response = client.chat.completions.create(
+            model=model,
+            max_tokens=budget,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": LINK_PROMPT},
+                {"role": "user", "content": content},
+            ],
+            **kwargs,
+        )
+        try:
+            return _parse_answer(response, budget)
+        except ValueError as exc:
+            if attempt >= retries:
+                raise ValueError(f"{exc} (попыток: {attempt + 1})") from exc
+            # Обрезанный ответ лечится запасом токенов; пустой – повтором запроса.
+            budget = min(max(budget * 2, 1000), cap)
+    raise AssertionError("недостижимо: цикл всегда возвращает результат или бросает ошибку")
 
 
 def save_link(db, candidate: Candidate, result: dict, model: str = "") -> None:
@@ -284,6 +351,39 @@ def save_link(db, candidate: Candidate, result: dict, model: str = "") -> None:
             datetime.now(timezone.utc).isoformat(timespec="seconds"),
         ),
     )
+    # Успешная оценка снимает счётчик прошлых ошибок этой пары.
+    db.execute(
+        "DELETE FROM link_failures WHERE path_a=? AND path_b=?",
+        (candidate.path_a, candidate.path_b),
+    )
+
+
+def record_link_failure(db, path_a: str, path_b: str, error: str) -> int:
+    """Запомнить неудачную попытку пары; вернуть общее число попыток."""
+    db.execute(
+        "INSERT INTO link_failures(path_a,path_b,attempts,last_error,updated_at)"
+        " VALUES (?,?,1,?,?)"
+        " ON CONFLICT(path_a,path_b) DO UPDATE SET attempts=attempts+1,"
+        " last_error=excluded.last_error, updated_at=excluded.updated_at",
+        (
+            path_a,
+            path_b,
+            str(error)[:500],
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        ),
+    )
+    row = db.execute(
+        "SELECT attempts FROM link_failures WHERE path_a=? AND path_b=?",
+        (path_a, path_b),
+    ).fetchone()
+    return int(row[0]) if row else 1
+
+
+def reset_links(db) -> int:
+    """Удалить кэш оценок и счётчики ошибок: следующий прогон пересчитает пары."""
+    removed = max(0, db.execute("DELETE FROM note_links").rowcount)
+    db.execute("DELETE FROM link_failures")
+    return removed
 
 
 def _json_list(value: str) -> list[str]:
