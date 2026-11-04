@@ -7,6 +7,7 @@
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -18,7 +19,11 @@ from urllib.parse import urlparse
 
 from common import EXCLUDE_DIRS, VAULTS, connect, iter_notes, stem_text
 from links import candidate_pairs, classify_pair, save_link
+from logging_setup import setup_file_logging
 from tags import extract_tags
+
+logger = logging.getLogger(__name__)
+
 
 MAX_CHUNK = 6000           # символов в одном куске
 MAX_DISTILL_INPUT = int(os.environ.get("LLM_MAX_INPUT_CHARS", "60000"))  # больше – делаем map-reduce по секциям
@@ -330,8 +335,13 @@ def build_links(db, changed: set[str]) -> int:
                 f"[связи {i}/{len(todo)}] ОШИБКА {candidate.path_a!r} <-> {candidate.path_b!r}: {exc!r}",
                 file=sys.stderr,
             )
+            logger.error(
+                "[связи %s/%s] ОШИБКА %r <-> %r: %r",
+                i, len(todo), candidate.path_a, candidate.path_b, exc,
+            )
     if failed:
         print(f"ОШИБОК СВЯЗЕЙ: {failed}", file=sys.stderr)
+        logger.error("ОШИБОК СВЯЗЕЙ: %s", failed)
     return failed
 
 
@@ -340,20 +350,27 @@ def sync(dry_run: bool = False) -> int:
     known = {r["path"]: r["content_hash"] for r in db.execute("SELECT path, content_hash FROM notes")}
     seen, todo = set(), []
     tags_by_path: dict[str, list[str]] = {}
+    total = skipped_size = skipped_error = skipped_empty = 0
     for abs_path, rel in iter_notes():
+        total += 1
         try:
             if abs_path.stat().st_size > MAX_NOTE_BYTES:
+                skipped_size += 1
                 print(f"ПРОПУСК {rel!r}: файл больше {MAX_NOTE_BYTES} байт", file=sys.stderr)
+                logger.warning("ПРОПУСК %r: файл больше %s байт", rel, MAX_NOTE_BYTES)
                 if rel in known:
                     seen.add(rel)  # прежнюю запись не удаляем, пока файл не уменьшится
                 continue
             text = abs_path.read_text(encoding="utf-8", errors="replace")
         except OSError as e:  # недоступный файл не должен ронять прогон
+            skipped_error += 1
             if rel in known:
                 seen.add(rel)  # временно не читается – прежнюю запись из БД не удаляем
             print(f"ПРОПУСК {rel!r}: {e!r}", file=sys.stderr)
+            logger.warning("ПРОПУСК %r: %r", rel, e)
             continue
         if not text.strip():
+            skipped_empty += 1
             continue  # пустая заметка не индексируется; прежняя запись уйдёт в «исчезнувшие»
         seen.add(rel)
         tags_by_path[rel] = extract_tags(text)
@@ -362,8 +379,17 @@ def sync(dry_run: bool = False) -> int:
             todo.append((rel, abs_path, text, h))
     gone = [p for p in known if p not in seen]
 
-    print(f"к обработке: {len(todo)}, к удалению: {len(gone)}, без изменений: {len(seen) - len(todo)}")
+    skipped = skipped_size + skipped_error + skipped_empty
+    print(
+        f"всего найдено файлов: {total}; к обработке: {len(todo)}, "
+        f"к удалению: {len(gone)}, без изменений: {len(seen) - len(todo)}, пропущено: {skipped}"
+    )
     if dry_run:
+        if skipped:
+            print(
+                f"  пропуски: больше лимита {skipped_size}, ошибки чтения {skipped_error}, "
+                f"пустых {skipped_empty}"
+            )
         for rel, *_ in todo:
             print(f"  + {rel!r}")
         for p in gone:
@@ -387,6 +413,7 @@ def sync(dry_run: bool = False) -> int:
             failed += 1
             failed_paths.add(rel)
             print(f"[{i}/{len(todo)}] ОШИБКА {rel!r}: {e!r}", file=sys.stderr)
+            logger.error("[%s/%s] ОШИБКА %r: %r", i, len(todo), rel, e)
 
     # Теги обновляем и у неизменённых заметок: так старый индекс получает теги
     # без полного пересчёта LLM-карточек.
@@ -400,6 +427,7 @@ def sync(dry_run: bool = False) -> int:
     failed += build_links(db, changed_ok)
     if failed:
         print(f"ОШИБОК: {failed}", file=sys.stderr)
+        logger.error("ОШИБОК: %s", failed)
     return 1 if failed else 0
 
 
@@ -435,6 +463,7 @@ def watch(debounce: float = 30.0) -> int:
 
 
 if __name__ == "__main__":
+    setup_file_logging()
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--watch", action="store_true")
