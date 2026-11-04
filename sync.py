@@ -263,26 +263,29 @@ def sync_note_tags(db, tags_by_path: dict[str, list[str]]) -> int:
     return updated
 
 
-def build_links(db, changed: set[str]) -> int:
-    """Оценить через LLM пары заметок с общими тегами. Возвращает число ошибок."""
+def _link_candidates(db, changed: set[str]):
+    """Кандидаты связей по общим тегам/терминам; [] если этап связей отключён."""
     if os.environ.get("BRAIN_LINKS_ENABLED", "1").lower() not in {"1", "true", "yes"}:
-        return 0
-    min_score = _env_float("BRAIN_LINK_MIN_SCORE", 0.65)
-    max_pairs = _env_int("BRAIN_LINK_MAX_PAIRS", 100)
-    if max_pairs <= 0:
-        return 0
-    candidates = candidate_pairs(
+        return []
+    if _env_int("BRAIN_LINK_MAX_PAIRS", 100) <= 0:
+        return []
+    return candidate_pairs(
         db,
         changed,
-        min_score=min_score,
+        min_score=_env_float("BRAIN_LINK_MIN_SCORE", 0.65),
         max_per_note=_env_int("BRAIN_LINK_MAX_PER_NOTE", 12),
         max_tag_fanout=_env_int("BRAIN_LINK_MAX_TAG_FANOUT", 40),
         min_shared_terms=_env_int("BRAIN_LINK_MIN_SHARED_TERMS", 2),
         max_term_fanout=_env_int("BRAIN_LINK_MAX_TERM_FANOUT", 30),
     )
+
+
+def build_links(db, changed: set[str]) -> int:
+    """Оценить через LLM пары заметок с общими тегами. Возвращает число ошибок."""
+    candidates = _link_candidates(db, changed)
     if not candidates:
         return 0
-    todo = candidates[:max_pairs]
+    todo = candidates[:max(1, _env_int("BRAIN_LINK_MAX_PAIRS", 100))]
     print(f"связи: кандидатов {len(candidates)}, сравню {len(todo)}")
     if len(candidates) > len(todo):
         print(f"связи: ещё {len(candidates) - len(todo)} останутся на следующий прогон")
@@ -394,6 +397,11 @@ def sync(dry_run: bool = False) -> int:
             print(f"  + {rel!r}")
         for p in gone:
             print(f"  - {p!r}")
+        links_candidates = _link_candidates(db, {rel for rel, *_ in todo})
+        if links_candidates:
+            # Оценка по текущему индексу: теги только что изменённых заметок
+            # попадут в кандидатов после реальной индексации.
+            print(f"связи: кандидатов {len(links_candidates)}")
         return 0
 
     for p in gone:
