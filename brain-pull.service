@@ -7,6 +7,9 @@
 #   Для приватного репозитория дай пользователю brain доступ: SSH deploy key
 #   или credential helper с PAT. При BRAIN_WRITE_ENABLED=true нужен доступ
 #   на запись: MCP сам коммитит созданную Telegram-заметку и выполняет push.
+#   Для HTTPS credential-store используйте /var/lib/brain-git/credentials:
+#   домашний каталог read-only, а helper создаёт рядом с credentials файл .lock.
+#   Перенос файла и настройка helper для обоих клонов — README, «HTTPS credentials».
 #   VAULT_PATH в /opt/brain/.env должен указывать на /srv/obsidian-vault —
 #   абсолютным путём или относительно каталога репозитория.
 # Установка:
@@ -28,6 +31,10 @@ Type=oneshot
 # Для уже существующих файлов один раз выполните: chmod 700 data && chmod 600 .env data/brain.db*
 User=brain
 Group=brain
+# Отдельный каталог для HTTPS credentials и .lock; systemd создаёт его с владельцем
+# brain и разрешает запись даже при ProtectSystem=strict. SSH не требует настройки helper.
+StateDirectory=brain-git
+StateDirectoryMode=0700
 # Несколько ExecStart у oneshot выполняются по порядку; сбой прерывает цепочку
 # (нет сети -> pull не удался -> sync пропущен; таймер повторит через 5 минут).
 # --ff-only не разрешает расхождение веток. При неудавшемся push из MCP сначала
@@ -41,7 +48,7 @@ ExecStart=/opt/brain/.venv/bin/python /opt/brain/sync.py
 # Первый полный прогон (пустая data/brain.db) может занять десятки минут;
 # потолок нужен, чтобы зависший git/LLM не блокировал таймер навсегда.
 TimeoutStartSec=2h
-# Hardening: запись – только в клоны хранилищ и data/; домашний каталог – только чтение
+# Hardening: запись – в клоны хранилищ, data/ и StateDirectory; home – только чтение
 # (оттуда git/ssh берут креды и ключи). Если пути лежат в /home – подстрой ProtectHome.
 NoNewPrivileges=true
 ProtectSystem=strict

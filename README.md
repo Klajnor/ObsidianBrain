@@ -76,6 +76,58 @@ sudo ./install-systemd.sh         # все файлы
 
 Скрипт копирует файлы в `/etc/systemd/system` и делает `systemctl daemon-reload`; включение и запуск — вручную (`systemctl enable --now ...`). Варианты `sync` и `pull` взаимоисключающие, включайте один.
 
+### HTTPS credentials
+
+Ошибка `unable to get credential storage lock in 1000 ms: Read-only file system`
+в `brain-pull.service` обычно означает, что `git credential-store` пытается
+обновить файл credentials в домашнем каталоге, который юнит открывает только
+для чтения (`ProtectHome=read-only`). Это не блокировка репозитория: удаление
+`index.lock`, увеличение таймаута или `chmod` не исправят read-only монтирование.
+Helper создаёт рядом с credentials файл `.lock`, поэтому разрешения на запись
+только в сам файл недостаточно.
+
+Для HTTPS с `credential-store` используйте `/var/lib/brain-git/credentials`.
+Юнит создаёт отдельный каталог через `StateDirectory=brain-git` с правами `0700`
+и владельцем `brain`; он доступен для записи и при `ProtectSystem=strict`.
+Домашний каталог остаётся read-only, код и `.venv` не открываются на запись.
+Для SSH перенос credentials не нужен.
+
+Один раз перенесите существующие credentials **пользователя службы** (не root).
+Замените `/path/to/existing/git-credentials` на фактический путь, например
+`/home/brain/.git-credentials`; при нестандартном `credential.helper store --file=...`
+используйте указанный там файл. Команда ниже копирует файл без вывода содержимого;
+не перезаписывайте уже настроенный `/var/lib/brain-git/credentials`.
+
+```bash
+sudo install -d -o brain -g brain -m 0700 /var/lib/brain-git
+sudo install -o brain -g brain -m 0600 /path/to/existing/git-credentials /var/lib/brain-git/credentials
+
+for vault in /srv/obsidian /srv/obsidian-personal; do
+    sudo -u brain git -C "$vault" config --local --replace-all credential.helper ''
+    sudo -u brain git -C "$vault" config --local --add credential.helper 'store --file=/var/lib/brain-git/credentials'
+done
+
+sudo ./install-systemd.sh pull
+sudo systemctl start brain-pull.service
+```
+
+Пустой первый `credential.helper` сбрасывает унаследованный глобальный helper:
+иначе Git может продолжить попытки записи в старый файл. Замените пути клонов
+и пользователя на свои; перед переустановкой юнита сохраните свои настройки путей.
+Если в установленном юните уже есть локальные правки, вместо его замены добавьте
+через `sudo systemctl edit brain-pull.service`:
+
+```ini
+[Service]
+StateDirectory=brain-git
+StateDirectoryMode=0700
+```
+
+Затем выполните `sudo systemctl daemon-reload` и запустите `brain-pull.service`.
+**Одного обновления юнита недостаточно:** существующий helper нужно переключить
+на новый путь. `credential-store` хранит токен незашифрованным; не печатайте файл,
+не добавляйте его в Git и не передавайте токен в аргументах команд.
+
 ### Автообновление кода на сервере
 
 Если код лежит в `/opt/brain`, его может обновлять таймер KapumChatBot:

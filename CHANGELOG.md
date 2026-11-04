@@ -21,6 +21,7 @@
 
 ### Исправлено
 
+- `brain-pull.service`: добавлен защищённый `StateDirectory=brain-git` (`/var/lib/brain-git`, `0700`) для HTTPS credentials и файла блокировки `credential-store`. В README описан перенос credentials и сброс унаследованного helper; `ProtectHome=read-only` и `ProtectSystem=strict` сохранены. Обновление одного юнита без переключения helper на новый путь не исправляет старую конфигурацию.
 - Ошибки `в ответе модели нет JSON-объекта` при пустом/обрезанном ответе LLM: `classify_pair` распознаёт `finish_reason=length` и пустой `content`, повторяет запрос с удвоенным лимитом токенов (`LLM_LINK_RETRIES`, `LLM_LINK_MAX_TOKENS_CAP`), а ошибки ответа учитываются в новой таблице `link_failures`. После `BRAIN_LINK_MAX_ATTEMPTS` (по умолчанию 3) пара откладывается и перестаёт занимать очередь каждый прогон; успешная оценка или `--rebuild-links` счётчик сбрасывают.
 - Удаление заметки теперь явно чистит `chunks`, `note_tags`, `note_links`, `link_failures` и FTS, не полагаясь только на `ON DELETE CASCADE`; в начале каждого прогона `prune_orphans` убирает «сирот», оставшихся от старых версий или БД с выключенными внешними ключами. Удалённая заметка больше не находится поиском и не остаётся в связях.
 
