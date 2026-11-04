@@ -5,6 +5,7 @@ data/
 *.db
 *.db-wal
 *.db-shm
+errors.log*
 .venv/
 __pycache__/
 *.pyc

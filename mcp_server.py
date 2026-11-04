@@ -1,5 +1,6 @@
 """MCP-сервер «второго мозга»: поиск по карточкам и выдача текста заметок."""
 import json
+import logging
 import os
 import sqlite3
 
@@ -13,6 +14,7 @@ from mcp.server.mcpserver import MCPServer
 
 from common import EXCLUDE_DIRS, EXCLUDE_FILES, VAULTS, connect, fts_query
 from links import related as _related_rows
+from logging_setup import setup_file_logging
 
 os.environ.pop("LLM_API_KEY", None)
 
@@ -152,6 +154,8 @@ def list_notes(doc_type: str = "", limit: int = 50) -> list[dict]:
 if os.environ.get("BRAIN_WRITE_ENABLED", "false").lower() == "true":
     from capture import WriteError, create_note as capture_note
 
+    logger = logging.getLogger(__name__)
+
     @mcp.tool()
     def create_note(content: str, request_id: str, title: str = "", tags: list[str] | None = None) -> dict:
         """Создать новую Telegram-заметку и отправить её в Git (BRAIN_WRITE_ENABLED=true).
@@ -164,9 +168,11 @@ if os.environ.get("BRAIN_WRITE_ENABLED", "false").lower() == "true":
             return capture_note(content, request_id, title=title, tags=tags)
         except WriteError as exc:
             # Код стадии уже безопасен: без путей и текста заметки.
+            logger.error("create_note: %s", exc)
             return {"git_pushed": False, "error": str(exc)}
         except ValueError as exc:
             # Ошибка валидации/конфликта request_id; текст фиксированный.
+            logger.error("create_note: stage=validate: %r", exc)
             return {"git_pushed": False, "error": f"stage=validate: {type(exc).__name__}"}
         except RuntimeError as exc:
             message = str(exc)
@@ -174,11 +180,17 @@ if os.environ.get("BRAIN_WRITE_ENABLED", "false").lower() == "true":
                 "Ошибка Git (", "Git недоступен", "Хранилище должно быть",
                 "Для ветки", "Есть посторонние", "Созданный файл",
             )):
+                logger.error("create_note: %s", message)
                 return {"git_pushed": False, "error": message}
+            logger.error("create_note: stage=internal: %s", type(exc).__name__)
             return {"git_pushed": False, "error": f"stage=internal: {type(exc).__name__}"}
         except Exception as exc:  # noqa: BLE001 - вернуть клиенту безопасную стадию
+            logger.error("create_note: stage=internal: %s", type(exc).__name__)
             return {"git_pushed": False, "error": f"stage=internal: {type(exc).__name__}"}
 
 
 if __name__ == "__main__":
+    # MCP работает по stdio: любые stdout-записи нарушат протокол, поэтому
+    # журнал — только файл; при LOG_FILE=off остаётся stderr (journald).
+    setup_file_logging()
     mcp.run()
