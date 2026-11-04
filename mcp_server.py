@@ -153,14 +153,15 @@ if os.environ.get("BRAIN_WRITE_ENABLED", "false").lower() == "true":
     from capture import WriteError, create_note as capture_note
 
     @mcp.tool()
-    def create_note(content: str, request_id: str) -> dict:
+    def create_note(content: str, request_id: str, title: str = "", tags: list[str] | None = None) -> dict:
         """Создать новую Telegram-заметку и отправить её в Git (BRAIN_WRITE_ENABLED=true).
 
         Не изменяет существующие файлы. Повтор с тем же request_id не создаёт дубликат.
         Авторизацию владельца обязан проверить вызывающий клиент.
+        title и tags подбирает клиент; сервер очищает имя и обеспечивает уникальность.
         """
         try:
-            return capture_note(content, request_id)
+            return capture_note(content, request_id, title=title, tags=tags)
         except WriteError as exc:
             # Код стадии уже безопасен: без путей и текста заметки.
             return {"git_pushed": False, "error": str(exc)}

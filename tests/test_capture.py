@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import os
 import sqlite3
 import sys
@@ -96,10 +97,109 @@ class CaptureTests(unittest.TestCase):
 
     def test_conflict_never_overwrites_file(self):
         self.capture.create_note("original", "same")
+        target = next((self.vault / "Telegram").glob("*.md"))
+        original = target.read_bytes()
         with self.assertRaises(ValueError):
             self.capture.create_note("changed", "same")
+        self.assertEqual(target.read_bytes(), original)
+
+    def test_readable_name_is_sanitized_and_fits_48_chars_with_suffix(self):
+        result = self.capture.create_note("Точный **текст**\nВторая строка", "name",
+                                          title="../Е\u0308жики и SQL / 中文 🙂 42 " * 10, tags=["sql"])
+        target = self.vault / "Telegram" / Path(result["path"]).name
+        self.assertRegex(target.stem, r"\A[A-Za-zА-Яа-яЁё0-9]{1,48}\Z")
+        self.assertTrue(target.stem.startswith("ЁжикиИSQL42"))
+        self.assertTrue(target.read_text(encoding="utf-8").endswith("\n\nТочный **текст**\nВторая строка\n"))
+
+    def test_generated_tags_are_in_frontmatter_index_and_keywords(self):
+        result = self.capture.create_note("Настройка базы #SQLite", "metadata",
+                                          title="НастройкаSQLite", tags=["SQL", "backup", "sql"])
+        target = self.vault / "Telegram" / Path(result["path"]).name
+        text = target.read_text(encoding="utf-8")
+        self.assertIn('tags: ["backup", "sql", "sqlite"]', text)
+        self.assertEqual(result["tags"], ["backup", "sql", "sqlite"])
+        db = self.connect()
+        self.addCleanup(db.close)
+        self.assertEqual([row[0] for row in db.execute("SELECT tag FROM note_tags ORDER BY tag")],
+                         result["tags"])
+        card = db.execute("SELECT title,keywords FROM notes").fetchone()
+        self.assertEqual(card["title"], "НастройкаSQLite")
+        self.assertIn("backup", json.loads(card["keywords"]))
+        self.assertEqual(db.execute("SELECT count(*) FROM fts_notes WHERE fts_notes MATCH 'backup'").fetchone()[0], 1)
+
+    def test_original_frontmatter_tags_are_preserved_without_rewriting_body(self):
+        body = '---\ntags: ["old-tag"]\n---\n\nИсходный текст #inline'
+        result = self.capture.create_note(body, "frontmatter", title="Текст", tags=["new-tag"])
+        self.assertEqual(result["tags"], ["inline", "new-tag", "old-tag"])
+        target = self.vault / "Telegram" / Path(result["path"]).name
+        self.assertTrue(target.read_text(encoding="utf-8").endswith(body + "\n"))
+
+    def test_same_title_different_actions_have_unique_files(self):
+        first = self.capture.create_note("Один текст", "first", title="ОдинаковоеИмя")
+        second = self.capture.create_note("Один текст", "second", title="ОдинаковоеИмя")
+        self.assertNotEqual(first["path"], second["path"])
+        self.assertEqual(len(list((self.vault / "Telegram").glob("*.md"))), 2)
+
+    def test_changed_ai_metadata_on_retry_reuses_file_even_after_index_failure(self):
+        with patch.object(self.capture, "connect", side_effect=sqlite3.OperationalError), self.assertRaises(self.capture.WriteError):
+            self.capture.create_note("Исходный текст", "retry", title="ПервоеИмя", tags=["first"])
         target = next((self.vault / "Telegram").glob("*.md"))
-        self.assertEqual(target.read_text(encoding="utf-8"), "original\n")
+        original = target.read_bytes()
+        result = self.capture.create_note("Исходный текст", "retry", title="ДругоеИмя", tags=["second"])
+        self.assertFalse(result["created"])
+        self.assertEqual(result["title"], "ПервоеИмя")
+        self.assertEqual(result["tags"], ["first"])
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(len(list((self.vault / "Telegram").glob("*.md"))), 1)
+
+    def test_short_hash_collision_uses_counter_without_overwrite(self):
+        # Укорачиваем суффикс, чтобы детерминированно проверить настоящую коллизию.
+        seen = {}
+        for i in range(17):
+            key = f"collision:{i}"
+            suffix = hashlib.sha256(key.encode()).hexdigest()[0]
+            if suffix in seen:
+                first_key, second_key = seen[suffix], key
+                break
+            seen[suffix] = key
+        with patch.object(self.capture, "_KEY_SUFFIX", 1):
+            first = self.capture.create_note("Первый текст", first_key, title="Имя" * 20)
+            second = self.capture.create_note("Второй текст", second_key, title="Имя" * 20)
+            retry = self.capture.create_note("Второй текст", second_key, title="ДругоеИмя")
+        self.assertNotEqual(first["path"], second["path"])
+        self.assertEqual(retry["path"], second["path"])
+        self.assertFalse(retry["created"])
+        self.assertLessEqual(len(Path(second["path"]).stem), 48)
+
+    def test_occupied_name_is_not_overwritten(self):
+        folder = self.vault / "Telegram"
+        folder.mkdir()
+        suffix = hashlib.sha256(b"occupied").hexdigest()[:12]
+        occupied = folder / f"Имя{suffix}.md"
+        occupied.write_text("Чужая заметка", encoding="utf-8")
+        result = self.capture.create_note("Новый текст", "occupied", title="Имя")
+        self.assertNotEqual(Path(result["path"]).name, occupied.name)
+        self.assertEqual(occupied.read_text(encoding="utf-8"), "Чужая заметка")
+        self.assertTrue(Path(result["path"]).stem.endswith("1" + suffix))
+
+    def test_legacy_request_is_retried_without_renaming_or_adding_tags(self):
+        folder = self.vault / "Telegram"
+        folder.mkdir()
+        target = folder / (hashlib.sha256(b"legacy").hexdigest() + ".md")
+        target.write_text("Старая заметка\n", encoding="utf-8")
+        original = target.read_bytes()
+        result = self.capture.create_note("Старая заметка", "legacy", title="НовоеИмя", tags=["new"])
+        self.assertFalse(result["created"])
+        self.assertEqual(Path(result["path"]).name, target.name)
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(len(list(folder.glob("*.md"))), 1)
+
+    def test_invalid_metadata_is_rejected_before_sync_or_file_creation(self):
+        for title, tags in ((42, []), ("Имя", "sql"), ("Имя", [42]), ("Имя", ["sql"] * 9)):
+            with self.subTest(title=title, tags=tags), self.assertRaises(ValueError):
+                self.capture.create_note("Текст", "id", title=title, tags=tags)
+        self.sync.assert_not_called()
+        self.assertFalse((self.vault / "Telegram").exists())
 
     def test_windows_newlines_have_stable_hash(self):
         self.capture.create_note("первая\r\nвторая", "windows")
