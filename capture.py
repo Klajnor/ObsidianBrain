@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from common import VAULTS, connect, stem_text
 from git_publish import publish_note, sync_origin
+from tags import extract_tags
 
 _WRITE_LOCK = threading.Lock()
 
@@ -99,6 +100,7 @@ def _create_note(content: str, request_id: str) -> dict:
 
 def _index_note(db, path, target, content, text, title, digest):
     """Индексировать новый файл; гонка с sync.py не должна ломать запись."""
+    tags = extract_tags(text)
     try:
         cursor = db.execute(
             "INSERT INTO notes(path,content_hash,mtime,title,summary,keywords,entities,questions,doc_type,updated_at) "
@@ -113,7 +115,10 @@ def _index_note(db, path, target, content, text, title, digest):
             return
         raise ValueError("Конфликт request_id: заметка уже проиндексирована с другим содержимым") from None
     db.execute("INSERT INTO fts_notes(rowid,title,summary,keywords,questions) VALUES (?,?,?,?,?)",
-               (cursor.lastrowid, stem_text(title), stem_text(content[:1000]), stem_text("Telegram"), ""))
+               (cursor.lastrowid, stem_text(title), stem_text(content[:1000]),
+                stem_text(" ".join(["Telegram"] + tags)), ""))
+    for tag in tags:
+        db.execute("INSERT OR IGNORE INTO note_tags(path, tag) VALUES (?,?)", (path, tag))
     # Небольшие фрагменты сразу доступны через get_chunk.
     for start in range(0, len(text), 4000):
         chunk = text[start:start + 4000]

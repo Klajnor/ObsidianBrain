@@ -20,6 +20,31 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS chunks_path ON chunks(path);
 
+-- Теги Obsidian (frontmatter и инлайновые #теги), нормализованные tags.py.
+CREATE TABLE IF NOT EXISTS note_tags (
+    path TEXT NOT NULL REFERENCES notes(path) ON DELETE CASCADE,
+    tag  TEXT NOT NULL,
+    PRIMARY KEY (path, tag)
+);
+CREATE INDEX IF NOT EXISTS note_tags_tag ON note_tags(tag);
+
+-- Оценённые ИИ пары заметок; path_a < path_b, пара неупорядоченная.
+CREATE TABLE IF NOT EXISTS note_links (
+    path_a        TEXT NOT NULL REFERENCES notes(path) ON DELETE CASCADE,
+    path_b        TEXT NOT NULL REFERENCES notes(path) ON DELETE CASCADE,
+    score         REAL NOT NULL,
+    shared_tags   TEXT NOT NULL,   -- JSON list
+    shared_terms  TEXT NOT NULL DEFAULT '[]',  -- JSON list: keywords/entities fallback
+    common_themes TEXT NOT NULL,   -- JSON list
+    reason        TEXT NOT NULL,
+    model         TEXT NOT NULL DEFAULT '',
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (path_a, path_b),
+    CHECK (path_a < path_b)
+);
+CREATE INDEX IF NOT EXISTS note_links_b ON note_links(path_b);
+CREATE INDEX IF NOT EXISTS note_links_score ON note_links(score);
+
 -- Тексты в fts кладутся уже нормализованными (common.py:stem_text).
 -- kind='note' – карточка (rowid = notes.rowid), kind='chunk' – кусок (rowid = chunks.id).
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_notes USING fts5(

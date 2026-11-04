@@ -11,11 +11,14 @@ import os
 import re
 import sys
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
 from common import EXCLUDE_DIRS, VAULTS, connect, iter_notes, stem_text
+from links import candidate_pairs, classify_pair, save_link
+from tags import extract_tags
 
 MAX_CHUNK = 6000           # символов в одном куске
 MAX_DISTILL_INPUT = int(os.environ.get("LLM_MAX_INPUT_CHARS", "60000"))  # больше – делаем map-reduce по секциям
@@ -27,6 +30,21 @@ JSON_HINT = (
     "\n\nОтветь ТОЛЬКО одним JSON-объектом без пояснений и markdown: "
     '{"summary": str, "keywords": [str], "entities": [str], "questions": [str], "doc_type": str}'
 )
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
 
 _client = None
 
@@ -171,11 +189,12 @@ def distill(title: str, text: str, chunks: list[tuple[str, str]]) -> dict:
     return call_card(title, "\n\n".join(partial), "Ниже сводки разделов длинной заметки.")
 
 
-def index_note(db, path: str, abs_path: Path, text: str, h: str):
+def index_note(db, path: str, abs_path: Path, text: str, h: str, tags: list[str] | None = None):
     title = abs_path.stem
     body = strip_frontmatter(text)
     chunks = chunk_note(body)
     card = distill(title, body, chunks)
+    tags = sorted(set(tags if tags is not None else extract_tags(text)))
 
     remove_note(db, path)
     cur = db.execute(
@@ -189,8 +208,10 @@ def index_note(db, path: str, abs_path: Path, text: str, h: str):
     db.execute(
         "INSERT INTO fts_notes(rowid, title, summary, keywords, questions) VALUES (?,?,?,?,?)",
         (cur.lastrowid, stem_text(title), stem_text(card["summary"]),
-         stem_text(" ".join(card["keywords"] + card["entities"])), stem_text(" ".join(card["questions"]))),
+         stem_text(" ".join(card["keywords"] + card["entities"] + tags)), stem_text(" ".join(card["questions"]))),
     )
+    for tag in tags:
+        db.execute("INSERT OR IGNORE INTO note_tags(path, tag) VALUES (?,?)", (path, tag))
     for heading, chunk in chunks:
         c = db.execute("INSERT INTO chunks(path, heading, text, chunk_hash) VALUES (?,?,?,?)",
                        (path, heading, chunk, sha(chunk)))
@@ -205,13 +226,120 @@ def remove_note(db, path: str):
     db.execute("DELETE FROM fts_notes WHERE rowid=?", (row[0],))
     for (cid,) in db.execute("SELECT id FROM chunks WHERE path=?", (path,)).fetchall():
         db.execute("DELETE FROM fts_chunks WHERE rowid=?", (cid,))
-    db.execute("DELETE FROM notes WHERE path=?", (path,))  # chunks – каскадом
+    db.execute("DELETE FROM notes WHERE path=?", (path,))  # chunks, теги и связи – каскадом
+
+
+def sync_note_tags(db, tags_by_path: dict[str, list[str]]) -> int:
+    """Обновить теги, в том числе у заметок, проиндексированных старой версией."""
+    existing: dict[str, set[str]] = defaultdict(set)
+    for row in db.execute("SELECT path, tag FROM note_tags"):
+        existing[row["path"]].add(row["tag"])
+
+    updated = 0
+    for path, tags in tags_by_path.items():
+        tag_set = set(tags)
+        if existing.get(path, set()) == tag_set:
+            continue
+        db.execute("DELETE FROM note_tags WHERE path=?", (path,))
+        db.executemany(
+            "INSERT INTO note_tags(path, tag) VALUES (?,?)",
+            [(path, tag) for tag in sorted(tag_set)],
+        )
+        # Изменился набор тегов – прежние связи этой заметки больше не актуальны.
+        db.execute("DELETE FROM note_links WHERE path_a=? OR path_b=?", (path, path))
+        row = db.execute("SELECT rowid, keywords, entities FROM notes WHERE path=?", (path,)).fetchone()
+        if row:
+            words = json.loads(row["keywords"]) + json.loads(row["entities"]) + sorted(tag_set)
+            db.execute(
+                "UPDATE fts_notes SET keywords=? WHERE rowid=?",
+                (stem_text(" ".join(words)), row["rowid"]),
+            )
+        updated += 1
+    return updated
+
+
+def build_links(db, changed: set[str]) -> int:
+    """Оценить через LLM пары заметок с общими тегами. Возвращает число ошибок."""
+    if os.environ.get("BRAIN_LINKS_ENABLED", "1").lower() not in {"1", "true", "yes"}:
+        return 0
+    min_score = _env_float("BRAIN_LINK_MIN_SCORE", 0.65)
+    max_pairs = _env_int("BRAIN_LINK_MAX_PAIRS", 100)
+    if max_pairs <= 0:
+        return 0
+    candidates = candidate_pairs(
+        db,
+        changed,
+        min_score=min_score,
+        max_per_note=_env_int("BRAIN_LINK_MAX_PER_NOTE", 12),
+        max_tag_fanout=_env_int("BRAIN_LINK_MAX_TAG_FANOUT", 40),
+        min_shared_terms=_env_int("BRAIN_LINK_MIN_SHARED_TERMS", 2),
+        max_term_fanout=_env_int("BRAIN_LINK_MAX_TERM_FANOUT", 30),
+    )
+    if not candidates:
+        return 0
+    todo = candidates[:max_pairs]
+    print(f"связи: кандидатов {len(candidates)}, сравню {len(todo)}")
+    if len(candidates) > len(todo):
+        print(f"связи: ещё {len(candidates) - len(todo)} останутся на следующий прогон")
+
+    failed = 0
+    max_tokens = max(100, _env_int("LLM_LINK_MAX_TOKENS", 600))
+    for i, candidate in enumerate(todo, 1):
+        rows = {
+            row["path"]: row
+            for row in db.execute(
+                "SELECT path, title, summary FROM notes WHERE path IN (?,?)",
+                (candidate.path_a, candidate.path_b),
+            )
+        }
+        if candidate.path_a not in rows or candidate.path_b not in rows:
+            continue
+        tags: dict[str, list[str]] = defaultdict(list)
+        for row in db.execute(
+            "SELECT path, tag FROM note_tags WHERE path IN (?,?) ORDER BY tag",
+            (candidate.path_a, candidate.path_b),
+        ):
+            tags[row["path"]].append(row["tag"])
+        card_a = {
+            "title": rows[candidate.path_a]["title"],
+            "summary": rows[candidate.path_a]["summary"],
+            "tags": tags[candidate.path_a],
+        }
+        card_b = {
+            "title": rows[candidate.path_b]["title"],
+            "summary": rows[candidate.path_b]["summary"],
+            "tags": tags[candidate.path_b],
+        }
+        try:
+            result = classify_pair(
+                client(),
+                os.environ["LLM_MODEL"],
+                card_a,
+                card_b,
+                candidate.shared_tags,
+                shared_terms=candidate.shared_terms,
+                max_tokens=max_tokens,
+            )
+            save_link(db, candidate, result, model=os.environ["LLM_MODEL"])
+            db.commit()
+            print(f"[связи {i}/{len(todo)}] {candidate.path_a!r} <-> {candidate.path_b!r}: {result['score']:.2f}")
+        except Exception as exc:  # одна пара не должна ронять весь прогон
+            db.rollback()
+            failed += 1
+            print(
+                f"[связи {i}/{len(todo)}] ОШИБКА {candidate.path_a!r} <-> {candidate.path_b!r}: {exc!r}",
+                file=sys.stderr,
+            )
+    if failed:
+        print(f"ОШИБОК СВЯЗЕЙ: {failed}", file=sys.stderr)
+    return failed
 
 
 def sync(dry_run: bool = False) -> int:
     db = connect()
     known = {r["path"]: r["content_hash"] for r in db.execute("SELECT path, content_hash FROM notes")}
     seen, todo = set(), []
+    tags_by_path: dict[str, list[str]] = {}
     for abs_path, rel in iter_notes():
         try:
             if abs_path.stat().st_size > MAX_NOTE_BYTES:
@@ -228,6 +356,7 @@ def sync(dry_run: bool = False) -> int:
         if not text.strip():
             continue  # пустая заметка не индексируется; прежняя запись уйдёт в «исчезнувшие»
         seen.add(rel)
+        tags_by_path[rel] = extract_tags(text)
         h = sha(text)
         if known.get(rel) != h:
             todo.append((rel, abs_path, text, h))
@@ -245,15 +374,30 @@ def sync(dry_run: bool = False) -> int:
         remove_note(db, p)
     db.commit()
     failed = 0
+    changed_ok: set[str] = set()
+    failed_paths: set[str] = set()
     for i, (rel, abs_path, text, h) in enumerate(todo, 1):
         try:
-            index_note(db, rel, abs_path, text, h)
+            index_note(db, rel, abs_path, text, h, tags_by_path.get(rel))
             db.commit()
+            changed_ok.add(rel)
             print(f"[{i}/{len(todo)}] {rel!r}")
         except Exception as e:  # одна заметка не должна ронять весь прогон
             db.rollback()
             failed += 1
+            failed_paths.add(rel)
             print(f"[{i}/{len(todo)}] ОШИБКА {rel!r}: {e!r}", file=sys.stderr)
+
+    # Теги обновляем и у неизменённых заметок: так старый индекс получает теги
+    # без полного пересчёта LLM-карточек.
+    updated_tags = sync_note_tags(
+        db, {path: tags for path, tags in tags_by_path.items() if path not in failed_paths}
+    )
+    db.commit()
+    if updated_tags:
+        print(f"теги обновлены: {updated_tags}")
+
+    failed += build_links(db, changed_ok)
     if failed:
         print(f"ОШИБОК: {failed}", file=sys.stderr)
     return 1 if failed else 0

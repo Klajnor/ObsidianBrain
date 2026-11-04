@@ -60,6 +60,13 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(db.execute("SELECT count(*) FROM notes").fetchone()[0], 1)
         self.assertEqual(db.execute("SELECT count(*) FROM fts_chunks WHERE fts_chunks MATCH 'поиска'").fetchone()[0], 1)
 
+    def test_create_indexes_inline_tags(self):
+        self.capture.create_note("Заметка #SQL про #MSSQL", "tags")
+        db = self.connect()
+        self.addCleanup(db.close)
+        tags = [row[0] for row in db.execute("SELECT tag FROM note_tags ORDER BY tag")]
+        self.assertEqual(tags, ["mssql", "sql"])
+
     def test_concurrent_sync_index_is_idempotent(self):
         result = self.capture.create_note("race", "race")
         target = next((self.vault / "Telegram").glob("*.md"))

@@ -111,7 +111,16 @@ def connect(readonly: bool = False) -> sqlite3.Connection:
     db.execute("PRAGMA foreign_keys = ON")
     db.execute("PRAGMA journal_mode = WAL")  # чтения (MCP) не блокируются записями sync
     db.executescript(SCHEMA.read_text(encoding="utf-8"))
+    _migrate(db)
     return db
+
+
+def _migrate(db: sqlite3.Connection) -> None:
+    """Добавить новые колонки в уже существующие таблицы (без пересборки БД)."""
+    columns = {row[1] for row in db.execute("PRAGMA table_info(note_links)")}
+    if columns and "shared_terms" not in columns:
+        db.execute("ALTER TABLE note_links ADD COLUMN shared_terms TEXT NOT NULL DEFAULT '[]'")
+        db.commit()
 
 
 def _is_link(path: Path) -> bool:
