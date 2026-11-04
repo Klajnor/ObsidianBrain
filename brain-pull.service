@@ -45,7 +45,7 @@ TimeoutStartSec=2h
 # (оттуда git/ssh берут креды и ключи). Если пути лежат в /home – подстрой ProtectHome.
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/opt/brain/data /srv/obsidian-vault /srv/obsidian-personal
+ReadWritePaths=/opt/brain/data /srv/obsidian /srv/obsidian-personal
 ProtectHome=read-only
 PrivateTmp=true
 # В БД лежит полный текст заметок, а в .env — ключ API: не даём читать их другим.
