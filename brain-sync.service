@@ -27,8 +27,9 @@ User=brain
 Group=brain
 # WorkingDirectory и EnvironmentFile не нужны: .env и относительные VAULT_PATH
 # код читает сам, от каталога со скриптом (common.load_env, BRAIN_DIR).
-# Если зависимости поставлены в venv — укажи его питон: /opt/brain/.venv/bin/python
-ExecStart=/usr/bin/python3 /opt/brain/sync.py --watch
+# Используем то же виртуальное окружение, что и brain-pull.service.
+# Установка зависимостей: /opt/brain/.venv/bin/python -m pip install -r /opt/brain/requirements.txt
+ExecStart=/opt/brain/.venv/bin/python /opt/brain/sync.py --watch
 # SIGINT, а не SIGTERM: watch завершается чисто по KeyboardInterrupt (obs.stop())
 KillSignal=SIGINT
 Restart=on-failure
